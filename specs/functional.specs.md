@@ -39,7 +39,7 @@ hosts:
         id: ollama            # required — unique within the host
         description: "GPU inference"   # optional
         postfix: ollama       # optional — defaults to api
-        scheme: http          # optional — default http, https for TLS upstreams
+        scheme: http          # optional — default http; https, see "Upstream TLS"
         auth_token: ""        # optional — sent upstream as Authorization: Bearer
         max_concurrency: 0    # optional — 0 (default) means unlimited
 ```
@@ -74,10 +74,12 @@ currently live configuration stays in place:
 - every published model id the configuration produces is globally unique, and its base model name
   contains no `@` (published ids are parsed right-anchored: last `@` starts the host id, the last
   `-` before it starts the name segment).
-- price entries: `currency` is a 3-letter ISO 4217 code; `model` unique across entries; each alias
-  unique across the whole document and not equal to any other entry's `model` or alias, so price
-  lookup is never ambiguous; aliases match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` (no `@`); all four
-  prices are numbers ≥ 0.
+- price entries — **the whole `prices` section is optional**: a configuration with only `hosts` is
+  valid, savings stay off until it is filled in, and the export omits an empty `prices` rather than
+  writing an empty one. When present: `currency` is a 3-letter ISO 4217 code; `model` unique across
+  entries; each alias unique across the whole document and not equal to any other entry's `model` or
+  alias, so price lookup is never ambiguous; aliases match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` (no
+  `@`); all four prices are numbers ≥ 0.
 
 Config changes apply within one health-check interval; requests already in flight finish against the
 configuration they started with.
@@ -156,6 +158,27 @@ Supported in v1:
 
 An adapter must define all three columns. Unsupported or omitted `usage` is handled by the token
 fallback in [Usage recording](#usage-recording).
+
+### Upstream TLS
+
+A server with `scheme: https` is reached over TLS, but in v1 **its certificate is not verified**.
+Self-signed certificates are the norm on homelab and VLAN inference boxes, and a proxy that refuses
+them is a proxy that does not get used.
+
+The consequence is stated rather than hidden: anyone positioned between El Pulpo and the host can
+read and modify that traffic, and sees the `auth_token` El Pulpo forwards. v1 accepts this on the
+assumption that the fleet lives on a network the operator controls. Verification and pinning are
+deferred; until then this is the honest trade, not an oversight.
+
+### Cross-origin access
+
+`/v1` answers preflight and carries permissive CORS headers — `Access-Control-Allow-Origin: *`, with
+`Authorization` and `Content-Type` allowed on `GET`, `POST` and `OPTIONS`, preflight cached 10
+minutes. Browser clients and SDKs are expected to call the proxy directly.
+
+This works because `/v1` is token-only and cookieless: a wildcard origin cannot ride a session that
+does not exist. The dashboard and `/api/*` get **no CORS headers at all** and remain same-origin plus
+the CSRF marker — a web page may talk to the proxy, never to the configuration.
 
 ### Client-facing API
 
@@ -293,18 +316,25 @@ settings: credentials, which are environment only, and the
 [configuration](#configuration) document (`hosts`, `prices`), which is edited as one unit and exports
 as YAML.
 
-| setting | default | meaning |
-| --- | --- | --- |
-| `health_interval` | 30s | model-list probe period per server |
-| `probe_timeout` | 5s | per-probe timeout |
-| `connect_timeout` | 5s | upstream TCP + TLS setup |
-| `first_byte_timeout` | 60s | upstream response headers / first SSE chunk |
-| `stream_idle_timeout` | 120s | allowed gap between two SSE chunks |
-| `total_timeout` | off (`0`) | optional overall deadline per request |
-| `max_request_size` | 32 MiB | accepted proxy request body |
-| `queue_timeout` | 60s | wait for a free `max_concurrency` slot |
-| `retention_days` | off (`0`) | prune usage rows older than N days |
-| `timezone` | browser timezone | period evaluation and display of timestamps |
+| setting | default | allowed | meaning |
+| --- | --- | --- | --- |
+| `health_interval` | 30s | 5s – 3600s | model-list probe period per server |
+| `probe_timeout` | 5s | 1s – 300s | per-probe timeout |
+| `connect_timeout` | 5s | 1s – 300s | upstream TCP + TLS setup |
+| `first_byte_timeout` | 60s | 1s – 3600s | upstream response headers / first SSE chunk |
+| `stream_idle_timeout` | 120s | 1s – 3600s | allowed gap between two SSE chunks |
+| `total_timeout` | off (`0`) | off, or 1s – 86400s | optional overall deadline per request |
+| `max_request_size` | 32 MiB | 1 KiB – 1 GiB | accepted proxy request body |
+| `queue_timeout` | 60s | 1s – 3600s | wait for a free `max_concurrency` slot |
+| `retention_days` | off (`0`) | off, or any positive integer | prune usage rows older than N days |
+
+A value outside its range is rejected with a field-level error and the live value stays in force, as
+for a configuration save. Per-server `max_concurrency` takes `0` (unlimited) or any positive integer.
+
+**Time is the server's, everywhere.** Timestamps are stored in UTC, but presets (`today`, `this
+month`), custom ranges and all display happen in the timezone El Pulpo runs in. Containers default to
+UTC, so an operator wanting local-day statistics sets the container's `TZ`. Exported CSV stays UTC —
+a file is not a display.
 
 ## Token usage stats
 
@@ -316,9 +346,8 @@ error, upstream timeout or cancellation. Requests rejected before routing (unkno
 
 | field | notes |
 | --- | --- |
-| `timestamp` | when the request was received (UTC; displayed in the dashboard timezone) |
+| `timestamp` | when the request was received (UTC; displayed in the server timezone) |
 | `host`, `server` | the ids it was routed to |
-| `address` | which of the host's addresses served it — the paper trail for a VPN address switch |
 | `model` | published model id |
 | `endpoint` | `chat` in v1 |
 | `status` | `ok` \| `upstream_error` \| `upstream_timeout` \| `cancelled` |
@@ -342,7 +371,7 @@ The dashboard's statistics tab is a table of those rows, filterable and sortable
   `model`; combined with AND.
 - Grouped summary above the table, over the filtered period, grouped by `model`, `host`, `server` or
   `day`: token sums, row count, latency p50/p95 and — where a price exists — the amount.
-- Period: presets `today` and `this month`, plus a custom date range, evaluated in `timezone`.
+- Period: presets `today` and `this month`, plus a custom date range, evaluated in the server timezone.
 - Sorting on any column, pagination (default 50 rows).
 - A totals row for the filtered period: `tokens_in`, `tokens_out`, `tokens_cached`,
   `tokens_reasoning`, plus `latency` p50/p95.
@@ -406,8 +435,14 @@ To spare the operator typing cloud rates by hand, El Pulpo ships a read-only cat
 provider prices, embedded in the binary: provider, cloud model name, the four per-1M rates, currency
 (`USD`) and an `as_of` date, with a catalogue version and overall `as_of` stamp shown in the UI.
 
-- **Offline by construction.** El Pulpo makes no outbound requests at all; rates change when the
-  binary is upgraded, or when the operator points `ELPULPO_PRICE_CATALOGUE` at a file they supply —
+It is a **hand-curated seed list** — roughly the two dozen models people actually compare against,
+not a mirror of every provider catalogue. Refreshing it is part of cutting a release, and a supplied
+override file has the same shape. Nobody is pretending a static file tracks a market; the `as_of`
+stamp and the `stale` label exist so nobody forgets that.
+
+- **Offline by construction.** Beyond the hosts in its own configuration, El Pulpo talks to nothing:
+  no update check, no telemetry, no rate fetch. Rates change when the binary is upgraded, or when the
+  operator points `ELPULPO_PRICE_CATALOGUE` at a file they supply —
   the only way to refresh an air-gapped install, and the same env-var pattern as the config seed.
 - **Never applied on its own.** The Prices screen offers catalogue entries for base model names seen
   in usage that have no price entry, matched on the exact name or alias — no fuzzy guessing. Applying
@@ -481,12 +516,16 @@ used throughout.
 | 34 | model in usage with no catalogue match | no suggestion is made and the model stays `no price set` |
 | 35 | apply a catalogue entry over an existing price entry | refused until overwrite is confirmed; without confirmation the config is unchanged |
 | 36 | document currency is `EUR` | no catalogue rate is written automatically; the `USD` value is reference only |
-| 37 | El Pulpo running with no outbound network | everything above still works; the catalogue version and `as_of` date are displayed, and a catalogue older than 180 days is marked `stale` |
+| 37 | El Pulpo with no route to anything but its configured hosts | everything above still works; the catalogue version and `as_of` date are displayed, and a catalogue older than 180 days is marked `stale` |
 | 38 | a valid host added by hand directly in the config file | within a couple of seconds the host is probed and its models appear, with the reload logged at `INFO`; no restart |
 | 39 | a hand edit that breaks validation (unknown `api`) | the live configuration is unchanged, the error is logged at `ERROR` and shown on the dashboard, the file on disk is untouched |
 | 40 | dashboard form opened, then the file edited on disk, then the form saved | the save is refused with "changed on disk, reload first" and nothing is written |
 | 41 | a cross-site `POST` to a config-mutating dashboard route without the required header | `403`, configuration unchanged |
 | 42 | `ELPULPO_PROXY_TOKEN` or the dashboard password left empty, then restart | both the `WARN` log line and the dashboard banner are present after every restart, not only the first |
+| 43 | server with `auth_token: secret-abc`, request carrying a different proxy token | the upstream receives `Authorization: Bearer secret-abc` and never the client's token |
+| 44 | browser preflight and call to `/v1/models` from another origin; same against `/dashboard` | `/v1` answers the preflight and the response carries `Access-Control-Allow-Origin: *`; `/dashboard` carries no CORS headers |
+| 45 | config containing only `hosts`, no `prices` section | it saves and applies, savings read as disabled, and the export contains no `prices` key |
+| 46 | `health_interval: 1s`, or `max_request_size: 2GiB` | rejected with a field-level error naming the allowed range; the live values are unchanged |
 
 ## Out of scope (v1)
 
@@ -495,8 +534,9 @@ duplicate models, no named groups of published ids behind one requestable name �
 direct per-server routes and any other host/server passthrough · per-client API keys and
 per-client attribution in stats · embeddings endpoints · Ollama native `/api/chat`, `/api/generate`,
 `/api/embeddings` · Anthropic `/v1/messages` · response caching · multi-instance or HA deployments ·
-TLS termination at El Pulpo (reverse proxy assumed) · **any outbound request from El Pulpo**, price
-catalogue updates included · currency conversion of catalogue rates · backup and restore of the usage
+TLS termination at El Pulpo (reverse proxy assumed) · **any request to a host outside the configured
+fleet**, price catalogue updates included · upstream certificate verification (see
+[Upstream TLS](#upstream-tls)) · currency conversion of catalogue rates · backup and restore of the usage
 store (export the CSVs; config is backed up by exporting the YAML) · daily rollups that survive
 retention pruning · import/export of the global settings · audit log of configuration changes.
 

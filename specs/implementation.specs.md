@@ -51,6 +51,8 @@ additive as long as nothing above that interface emits SQL.
   `chmod 0600` → `fsync` → `os.Rename`. A crash mid-save leaves either the old file or the new one.
 - **Own writes are not external edits.** The known hash is updated before the watcher looks again, so
   a save is never reported back as a hand edit.
+- **An empty `prices` section is omitted**, not written as `prices: {}`, so a hosts-only config stays
+  readable (scenario 45).
 - **Watch** by polling `stat` every second and comparing a sha256 of the contents — no `fsnotify`
   dependency, and identical behaviour on bind mounts and overlay filesystems where inotify is
   unreliable. On change: parse → validate → apply (the same code path as a dashboard save, so
@@ -73,7 +75,9 @@ additive as long as nothing above that interface emits SQL.
 3. Route on exact published id from the catalogue the health loop maintains; otherwise
    `404 model_not_found` with the matching `reason`.
 4. Rewrite `model` to the base model name; set `stream_options.include_usage` only when
-   `stream: true` and the client omitted it.
+   `stream: true` and the client omitted it. The outgoing `Authorization` header is the server's
+   `auth_token`, never the client's proxy token — the inbound header is dropped before forwarding,
+   which is what scenario 43 asserts.
 5. **Concurrency slot**: `select` over the per-server semaphore, `queue_timeout` and
    `r.Context().Done()`; a server that went down while queued yields `503`. The slot is released by a
    `defer` spanning the whole streamed body, which is what makes scenario 8 pass.
@@ -99,6 +103,24 @@ with `DisableCompression: true` so bytes arrive as the upstream sent them.
 | `probe_timeout` | a separate `http.Client` for probes, so probe latency never consumes request budget |
 | client disconnect | the handler context is the parent; cancellation reaches the upstream body and releases the slot |
 
+**Upstream TLS.** `scheme: https` builds a transport with `TLSClientConfig.InsecureSkipVerify: true`
+— the functional spec's v1 choice, so the field name says what it does and `gosec` is silenced with a
+comment rather than a lint waiver nobody reads. No verification, no pinning, no CA field.
+
+**Settings bounds** live in one table in `internal/config`, validated before applying: `health_interval`
+5s–3600s, `probe_timeout`/`connect_timeout` 1s–300s, `first_byte_timeout`/`stream_idle_timeout`/
+`queue_timeout` 1s–3600s, `total_timeout` off or 1s–86400s, `max_request_size` 1 KiB–1 GiB,
+`retention_days` 0 or positive. Out of range is a field error with the range echoed (scenario 46), and
+the value in force never changes.
+
+**Time.** Period boundaries are computed with `time.Local`, so the container's `TZ` decides what
+"today" means; rows and CSV stay UTC throughout. Nothing in the schema stores an offset.
+
+**CORS.** One middleware on the `/v1` mux: `OPTIONS` answers `204` with the allow headers and no auth
+check, every other `/v1` response carries `Access-Control-Allow-Origin: *`. It is attached to that mux
+only — the dashboard and `/api/*` muxes never see it, so the absence of CORS headers on the dashboard
+(scenario 44) is structural rather than a configuration choice.
+
 ## Health and address election
 
 One goroutine per server on a `time.Ticker(health_interval)`, re-created when the setting changes.
@@ -119,7 +141,6 @@ CREATE TABLE requests (
   ts_ms            INTEGER NOT NULL,          -- received, unix ms UTC
   host_id          TEXT NOT NULL,
   server_id        TEXT NOT NULL,
-  address          TEXT NOT NULL,             -- which address served it
   model            TEXT NOT NULL,             -- published id
   endpoint         TEXT NOT NULL,
   status           TEXT NOT NULL,
@@ -157,6 +178,55 @@ CREATE TABLE meta (version INTEGER NOT NULL);
   `internal/usage` writes SQL, only `id` is referenced above that boundary, time math stays in Go on
   `ts_ms` integers, and no SQLite-only function is used. The batched-delete query is the one place
   that knows SQLite syntax and it is one function.
+
+## Price catalogue
+
+`internal/catalog/prices.yaml`, embedded with `go:embed`; `ELPULPO_PRICE_CATALOGUE` replaces it at
+runtime with a file of the identical schema.
+
+```yaml
+catalogue:
+    version: "2026.09"
+    as_of: 2026-09-01          # drives the 180-day stale label
+    currency: USD
+    rates:
+    -   provider: anthropic
+        model: claude-sonnet-4-5
+        input: 3.00
+        output: 15.00
+        cached_input: 0.30     # omit when not applicable
+        reasoning_output: 15.00
+```
+
+- Matching is exact on `model` against the base model name or an alias, compared case-insensitively.
+  No fuzzy matching, no similarity threshold — cloud names rarely equal Ollama tags, which is exactly
+  why the Prices screen also lists entries for manual picking.
+- A unit test fails the build on any entry missing provider/model/input/output, on a currency other
+  than `USD`, or on an unparseable `as_of`. A supplied override file runs through the same validation
+  at startup; if it fails, El Pulpo keeps the embedded catalogue and says so rather than starting with
+  no prices at all.
+- Refresh is a human editing the file when cutting a release. No generator, no provider API calls.
+
+## Performance envelope (v1 design targets)
+
+Design targets, not benchmark guarantees — a release that misses one is a conversation, not a
+rollback. Sized for one instance on one box, where the inference upstreams are the real bottleneck.
+
+| target | value | how it is checked |
+| --- | --- | --- |
+| concurrent in-flight streams | 200 sustained | opt-in `-scale` test against fake upstreams that hold streams open |
+| request rate | 50 new req/s peak | same harness, non-streaming |
+| memory | ≤ 150 MB RSS at 200 streams | RSS sampled during that test; bodies are never buffered, only the current frame |
+| added latency | ≤ 10 ms p95 per request, ≤ 1 ms per SSE frame | measured against a direct-to-upstream baseline |
+| usage rows retained | designed for 10 M (≈50k/day × 200 days) | opt-in `-scale` test: filtered 30-day query and percentiles ≤ 1s p95 |
+| prune | 1 M rows in ≤ 60s | times the batched delete on a generated 1 M-row database |
+| CSV export | 100k rows in ≤ 5s within the RSS cap | streamed export timed against a seeded database |
+| startup | `/healthz` listening ≤ 1s | plain test, no tag needed |
+| artifacts | binary ≤ 35 MB, image ≤ 60 MB | checked in CI; `modernc.org/sqlite` is most of the weight |
+
+The two `-scale` tests exist so a regression in the writer batching or the percentile query shows up on
+demand without taxing the default suite; everything else is either asserted cheaply or left as a
+stated expectation.
 
 ## Dashboard
 
@@ -205,10 +275,17 @@ the real listener against fake upstreams built on `httptest`:
 
 - Ollama-shaped (`/api/tags` + `/v1/chat/completions`) and OpenAI-shaped (`/v1/models`) fakes with
   knobs for a fixed model list, first-byte delay, mid-stream stall, missing `usage`, `500`, and
-  held-open streams for disconnects.
+  held-open streams for disconnects. Every fake records the headers it received: scenario 43 is the
+  credential-forwarding assertion, and it is the test that catches the one bug class that matters here
+  — leaking the client's proxy token upstream, or failing to send the server's own.
+- Scenario 44 asserts the CORS asymmetry in both directions; 45 and 46 cover the hosts-only config and
+  the settings ranges.
 - Two-address tests bind `127.0.0.1` and `127.0.0.2` — the whole `/8` is local on Linux, so
   `host_addresses` failover and stickiness (16–20) are exercised for real rather than mocked.
 - Timeout scenarios (30, 31) run with injected sub-second settings, so the suite stays fast.
+- **Deliberately untested in v1:** `total_timeout` and TLS upstreams. There is no certificate
+  verification to exercise because it is off, and `total_timeout` is off by default and awkward to
+  reach in a fast suite. Recorded here so their absence is not mistaken for coverage.
 - Golden files pin the canonical config export (24) and the validation error text (11, 17, 25); CSV
   round-trip tests re-parse the export and recompute the totals (13, 32).
 - `go test -race` throughout. A real-Ollama smoke test sits behind `-tags live` and is not in the
@@ -217,8 +294,8 @@ the real listener against fake upstreams built on `httptest`:
 ## Deliberately absent
 
 Web framework, ORM, template engine beyond `templ`, plugin system, Prometheus endpoint, clustering,
-encryption of the config at rest, and any outbound HTTP call. Each is a separate decision later;
-paying for them now would buy nothing the functional spec asks for.
+encryption of the config at rest, and any HTTP call to a host outside the configured fleet. Each is a
+separate decision later; paying for them now would buy nothing the functional spec asks for.
 
 ## Deliverable note
 
