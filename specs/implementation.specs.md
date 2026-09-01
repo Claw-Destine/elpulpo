@@ -10,4 +10,3 @@ El pulpo should be distributed as a single binary file + Docker image
 - frontend stack. SPA or SSR?
 - config database
 - token usage database
-- cache engine
