@@ -21,8 +21,10 @@ Covers **v1** only. Deferred items are listed in [Out of scope](#out-of-scope-v1
 ### Configuration
 
 All configuration is editable through the web dashboard and takes effect without a restart. It is one
-document with two top-level sections, `hosts` and `prices`, shown as YAML for hierarchical
-presentation; the storage format is an implementation decision.
+document with two top-level sections, `hosts` and `prices`, and it lives in one YAML file at
+`ELPULPO_CONFIG` — that file is both the store and the export format. A missing file is an empty
+configuration: El Pulpo starts, serves an empty catalogue and prompts for the first host; the first
+save creates the file.
 
 ```yaml
 hosts:
@@ -96,10 +98,15 @@ runtime state (health, active address, usage rows) and the global settings are n
 - A valid import is previewed as added / removed / changed hosts and servers, and only applied on
   confirmation. It then takes effect like any other change: within one health interval, in-flight
   requests untouched.
-- `ELPULPO_CONFIG_FILE` may point at a file that is loaded at startup **only when the configuration
-  is empty**, so a fresh Docker container can be seeded without the risk of a stale file silently
-  overwriting dashboard edits. A bootstrap file that fails validation is reported at `ERROR` and
-  leaves the configuration empty.
+- The file is **machine-owned**: a save rewrites it canonically, so comments an operator added by
+  hand do not survive it — they are dropped, not corrupted. Everything else about the file is
+  operator-friendly:
+  - a **hand edit on disk is honoured**: El Pulpo notices the change, validates it and applies it
+    within a couple of seconds, logging the reload at `INFO`. No restart.
+  - a hand edit that **fails validation** is refused: the live configuration stays as it was, the
+    error is logged at `ERROR` and shown on the dashboard, and the file on disk is left untouched.
+  - a dashboard save **races no hand edit**: if the file changed on disk after the dashboard loaded
+    it, the save is refused with "changed on disk, reload first" rather than overwriting it.
 
 ### Model naming
 
@@ -268,16 +275,23 @@ Credentials come from the environment only; the dashboard cannot change them.
 | `ELPULPO_DASHBOARD_USER` / `ELPULPO_DASHBOARD_PASSWORD` | HTTP Basic auth on `/dashboard` and `/api/*` |
 
 If either is empty, that surface is left unauthenticated and El Pulpo logs a `WARN` at startup and
-shows a persistent banner in the dashboard. The client's proxy token is never forwarded upstream;
-upstream credentials come from each server's `auth_token`. Dashboard Basic auth over plain HTTP must
-be discouraged in that warning, since config editing is remote control of the whole fleet.
+shows a persistent banner in the dashboard — on every start, not just the first. The client's proxy
+token is never forwarded upstream; upstream credentials come from each server's `auth_token`.
+Dashboard Basic auth over plain HTTP must be discouraged in that warning, since config editing is
+remote control of the whole fleet.
+
+Because a browser sends Basic auth credentials without any consent step, every route that changes
+state (config save, import, settings write) additionally requires a same-origin marker that a
+cross-site form cannot set — otherwise any page the operator's browser visits could rewrite the
+fleet. A request without it is rejected before the change is applied (`403`).
 
 ### Global settings
 
-Every value below is editable in the dashboard and applies immediately; the defaults are authoritative
-here, not in the prose around them. Two things are deliberately not settings: credentials, which are
-environment only, and the [configuration](#configuration) document (`hosts`, `prices`), which is
-edited as one unit and exports as YAML.
+Every value below is editable in the dashboard, applies immediately, and **survives a restart**. The
+defaults are authoritative here, not in the prose around them. Two things are deliberately not
+settings: credentials, which are environment only, and the
+[configuration](#configuration) document (`hosts`, `prices`), which is edited as one unit and exports
+as YAML.
 
 | setting | default | meaning |
 | --- | --- | --- |
@@ -457,7 +471,7 @@ used throughout.
 | 24 | export config, import it back unchanged | import preview reports no changes, `GET /v1/models` unchanged, and a second export is byte-identical to the first |
 | 25 | import YAML with an unsupported `api`, a duplicate host id and a duplicate name segment | all three violations reported with their paths; live config and `GET /v1/models` unchanged |
 | 26 | import YAML that drops `minion2` | preview lists `minion2` as removed; after confirming, behaviour matches scenario 2 |
-| 27 | `ELPULPO_CONFIG_FILE` pointing at a valid file | on an empty configuration it seeds the hosts; on a non-empty configuration it is ignored with an `INFO` line, and existing config survives |
+| 27 | `ELPULPO_CONFIG` pointing at a file that does not exist | El Pulpo starts with an empty configuration and an empty `GET /v1/models`; the first save through the dashboard creates the file |
 | 28 | a row dated a year ago, `retention_days` at its default | the row is still listed and counted; after setting `retention_days: 30` and running the prune, it is gone, the removal count is logged and the dashboard states history is limited to 30 days |
 | 29 | body larger than `max_request_size` | `413 request_too_large`; no usage row exists and a server at `max_concurrency: 1` still accepts a normal request |
 | 30 | upstream accepts the connection then stalls past `first_byte_timeout` | client gets `504 upstream_timeout`; row has `status: upstream_timeout` |
@@ -468,6 +482,11 @@ used throughout.
 | 35 | apply a catalogue entry over an existing price entry | refused until overwrite is confirmed; without confirmation the config is unchanged |
 | 36 | document currency is `EUR` | no catalogue rate is written automatically; the `USD` value is reference only |
 | 37 | El Pulpo running with no outbound network | everything above still works; the catalogue version and `as_of` date are displayed, and a catalogue older than 180 days is marked `stale` |
+| 38 | a valid host added by hand directly in the config file | within a couple of seconds the host is probed and its models appear, with the reload logged at `INFO`; no restart |
+| 39 | a hand edit that breaks validation (unknown `api`) | the live configuration is unchanged, the error is logged at `ERROR` and shown on the dashboard, the file on disk is untouched |
+| 40 | dashboard form opened, then the file edited on disk, then the form saved | the save is refused with "changed on disk, reload first" and nothing is written |
+| 41 | a cross-site `POST` to a config-mutating dashboard route without the required header | `403`, configuration unchanged |
+| 42 | `ELPULPO_PROXY_TOKEN` or the dashboard password left empty, then restart | both the `WARN` log line and the dashboard banner are present after every restart, not only the first |
 
 ## Out of scope (v1)
 
