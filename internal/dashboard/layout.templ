@@ -1,0 +1,57 @@
+package dashboard
+
+// Layout is the shared page shell: nav, persistent banners and the htmx
+// bootstrap. The CSRF marker rides every htmx request via hx-headers on
+// <body> — behaviour is hx-attributes only, no inline JavaScript anywhere.
+templ Layout(title, active, csrf string, d *Deps, content pageContent) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>El Pulpo — { title }</title>
+			<link rel="stylesheet" href="/dashboard/static/app.css"/>
+			<script src="/dashboard/static/htmx.min.js" defer="defer"></script>
+		</head>
+		<body hx-headers={ csrfBodyAttrs(csrf) }>
+			<header class="topbar">
+				<span class="brand">🐙 El Pulpo</span>
+				<nav>
+					<a href="/dashboard/servers" class={ navClass(active, "servers") }>Servers</a>
+					<a href="/dashboard/prices" class={ navClass(active, "prices") }>Prices</a>
+					<a href="/dashboard/stats" class={ navClass(active, "stats") }>Statistics</a>
+					<a href="/dashboard/settings" class={ navClass(active, "settings") }>Settings</a>
+				</nav>
+			</header>
+			<main>
+				if d.Open.ProxyOpen || d.Open.DashOpen {
+					<div class="banner warn">
+						<strong>Unauthenticated access.</strong>
+						if d.Open.ProxyOpen {
+							<span> ELPULPO_PROXY_TOKEN is empty — the /v1 proxy is open to anyone who can reach it.</span>
+						}
+						if d.Open.DashOpen {
+							<span> ELPULPO_DASHBOARD_PASSWORD is empty — the dashboard (remote control of the whole fleet) is unauthenticated; if you enable Basic auth over plain HTTP, put it behind TLS.</span>
+						}
+					</div>
+				}
+				if configErr(d) != "" {
+					<div class="banner error">
+						<strong>Config file problem:</strong>
+						<span> { configErr(d) } — the live configuration is unchanged; fix the file or save from the dashboard.</span>
+					</div>
+				}
+				@ content()
+			</main>
+		</body>
+	</html>
+}
+
+func navClass(active, name string) string {
+	if active == name {
+		return "active"
+	}
+	return ""
+}
+
+func configErr(d *Deps) string { return d.Store.LastErr() }

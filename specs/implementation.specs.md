@@ -302,3 +302,24 @@ separate decision later; paying for them now would buy nothing the functional sp
 `README.md` must cover: quick start for binary and Docker, the env table above, the config file
 reference including what a dashboard save does to hand-written comments, and how to back up —
 `VACUUM INTO` for the database, a plain copy of the YAML taken after a save.
+
+## As-built notes (v1)
+
+- **Test layout**: the acceptance suite lives in `acceptance/` (package `acceptance_test`) on a
+  shared harness, `internal/testutil` — `Start(t)` boots the real app on an `httptest` listener
+  with `health_interval=5s`/`probe_timeout=1s`, fake upstreams carry the knobs the Testing section
+  lists, and `IssueCSRF/CSRFPost` drive dashboard mutations. Golden files: the canonical export is
+  pinned in `internal/config/testdata/canonical.golden`; validation text is asserted per violation
+  path. The 27/45/46 dashboard-route variants live beside the store-level tests.
+- **Injected settings**: duration settings are floored at 1s (see functional spec, interpretation
+  12), so timeout scenarios run 1s settings against 2.5–4s fake stalls. The suite stays linear.
+- **`-tags live` smoke**: `acceptance/live_ollama_test.go` runs one chat against a real Ollama on
+  `127.0.0.1:11434` and skips when none answers; it is never in the default suite.
+- **templ versions**: runtime `github.com/a-h/templ v0.3.1020` (go.mod); generated with CLI
+  v0.3.1001 and confirmed compiling against either. Regenerate with `make templ`.
+- **Dashboard deviations from the original build contract (all additive)**: `config/import/apply`
+  also accepts `{"yaml","h"}` (re-posting the textarea) beside the staged `import_id` flow, because
+  the CSP forbids the inline JS that would move an id from preview to confirm; `prices/save` also
+  accepts flat form fields beside `{"prices":…|null}`; `config/save` also takes a `yaml` form
+  field; mutations answer an `HX-Trigger` header for htmx refresh. CSRF, hash-guard, violation and
+  stale-save outcomes are exactly as contracted.

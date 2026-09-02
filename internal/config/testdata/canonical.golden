@@ -1,0 +1,32 @@
+hosts:
+    - host_addresses:
+        - 192.168.1.101
+        - 10.8.0.5
+      id: minion1
+      description: Rack box 1
+      servers:
+        - port: 11434
+          api: ollama
+          id: ollama
+          description: GPU inference
+          scheme: http
+          auth_token: ""
+          max_concurrency: 0
+        - port: 8000
+          api: openai
+          id: vllm
+          postfix: vllm
+          scheme: https
+          auth_token: s3cret
+          max_concurrency: 4
+prices:
+    currency: USD
+    models:
+        - model: qwen3.8:27b
+          aliases:
+            - Qwen3-27B
+            - qwen27
+          input: 0.25
+          output: 1
+          cached_input: 0.1
+          reasoning_output: 1

@@ -1,0 +1,141 @@
+# El Pulpo reference price catalogue — a hand-curated seed list of the
+# models people actually compare self-hosted inference against. Rates are
+# per 1M tokens in USD. Refreshing this file is part of cutting a release.
+catalogue:
+    version: "2026.09"
+    as_of: 2026-09-01
+    currency: USD
+    rates:
+    -   provider: openai
+        model: gpt-4o
+        input: 2.50
+        output: 10.00
+        cached_input: 1.25
+    -   provider: openai
+        model: gpt-4o-mini
+        input: 0.15
+        output: 0.60
+        cached_input: 0.075
+    -   provider: openai
+        model: o3-mini
+        input: 1.10
+        output: 4.40
+        cached_input: 0.55
+        reasoning_output: 4.40
+    -   provider: openai
+        model: gpt-4.1
+        input: 2.00
+        output: 8.00
+        cached_input: 0.50
+    -   provider: anthropic
+        model: claude-sonnet-4-5
+        input: 3.00
+        output: 15.00
+        cached_input: 0.30
+        reasoning_output: 15.00
+    -   provider: anthropic
+        model: claude-3-5-haiku
+        input: 0.80
+        output: 4.00
+        cached_input: 0.08
+    -   provider: anthropic
+        model: claude-opus-4-1
+        input: 15.00
+        output: 75.00
+        cached_input: 1.50
+        reasoning_output: 75.00
+    -   provider: google
+        model: gemini-2.5-pro
+        input: 1.25
+        output: 10.00
+        cached_input: 0.31
+        reasoning_output: 10.00
+    -   provider: google
+        model: gemini-2.5-flash
+        input: 0.30
+        output: 2.50
+        cached_input: 0.075
+        reasoning_output: 2.50
+    -   provider: deepseek
+        model: deepseek-chat-v3
+        input: 0.27
+        output: 1.10
+        cached_input: 0.07
+    -   provider: deepseek
+        model: deepseek-reasoner-r1
+        input: 0.55
+        output: 2.19
+        cached_input: 0.14
+        reasoning_output: 2.19
+    -   provider: mistral
+        model: mistral-large
+        input: 2.00
+        output: 6.00
+    -   provider: mistral
+        model: mistral-small
+        input: 0.10
+        output: 0.30
+        cached_input: 0.01
+    -   provider: meta
+        model: llama-3.3-70b
+        input: 0.60
+        output: 0.80
+        cached_input: 0.20
+    -   provider: meta
+        model: llama-4-405b
+        input: 3.00
+        output: 12.00
+    -   provider: qwen
+        model: qwen-max
+        input: 1.60
+        output: 6.40
+        cached_input: 0.32
+    -   provider: qwen
+        model: qwen-plus
+        input: 0.40
+        output: 1.20
+        cached_input: 0.08
+    -   provider: x-ai
+        model: grok-4
+        input: 3.00
+        output: 15.00
+        cached_input: 0.75
+        reasoning_output: 15.00
+    -   provider: moonshot
+        model: kimi-k2
+        input: 0.60
+        output: 2.50
+        cached_input: 0.10
+        reasoning_output: 2.50
+    -   provider: deepseek
+        model: deepseek-v4-flash
+        input: 0.20
+        output: 0.80
+        cached_input: 0.05
+    -   provider: qwen
+        model: qwen3-32b
+        input: 0.08
+        output: 0.24
+        cached_input: 0.02
+        reasoning_output: 0.24
+    -   provider: openai
+        model: gpt-oss-120b
+        input: 0.07
+        output: 0.30
+        cached_input: 0.02
+        reasoning_output: 0.30
+    -   provider: openai
+        model: gpt-oss-20b
+        input: 0.02
+        output: 0.10
+        cached_input: 0.01
+        reasoning_output: 0.10
+    -   provider: meta
+        model: llama-4-scout
+        input: 0.15
+        output: 0.60
+    -   provider: mistral
+        model: devstral-2-123b
+        input: 0.50
+        output: 2.00
+        reasoning_output: 2.00

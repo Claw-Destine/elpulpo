@@ -1,0 +1,101 @@
+package dashboard
+
+// SettingsPage: every global knob, read-only env credential status, the
+// open-access warning and the (irreversible) prune control.
+templ SettingsPage(d *Deps, csrf string, v SettingsView) {
+	@Layout("Settings", "settings", csrf, d, func() templ.Component { return SettingsFragment(v) })
+}
+
+templ SettingsFragment(v SettingsView) {
+	<h1>Settings</h1>
+	<p class="hint">Every value applies immediately and survives a restart.</p>
+	<form
+		class="settings-form"
+		hx-post="/dashboard/action/settings/save"
+		hx-target="#settings-result"
+	>
+		<table class="grid">
+			<tbody>
+				for _, f := range v.Fields {
+					<tr>
+						<td class="label-cell">
+							<label for={ "set-" + f.Key }>{ f.Label }</label>
+							<div class="hint">
+								<code>{ f.Key }</code> — { f.Hint }
+							</div>
+						</td>
+						<td>
+							<input id={ "set-" + f.Key } name={ f.Key } value={ f.Value }/>
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+		<button type="submit">Save settings</button>
+	</form>
+	<div id="settings-result" class="msg" hx-swap="innerHTML"></div>
+
+	<h2>Credentials (environment only)</h2>
+	<p class="hint">The dashboard cannot change credentials — they come from the environment.</p>
+	<table class="grid">
+		<tbody>
+			<tr>
+				<td class="label-cell"><code>ELPULPO_PROXY_TOKEN</code></td>
+				<td>
+					if v.Open.ProxySet {
+						<span class="up">set</span>
+					} else {
+						<span class="down">unset — proxy is open</span>
+					}
+				</td>
+			</tr>
+			<tr>
+				<td class="label-cell"><code>ELPULPO_DASHBOARD_USER</code></td>
+				<td>
+					if v.Open.DashPassOK {
+						<span class="up">set (used with the password)</span>
+					} else {
+						<span class="down">unused — no dashboard password</span>
+					}
+				</td>
+			</tr>
+			<tr>
+				<td class="label-cell"><code>ELPULPO_DASHBOARD_PASSWORD</code></td>
+				<td>
+					if v.Open.DashPassOK {
+						<span class="up">set</span>
+					} else {
+						<span class="down">unset — dashboard is open</span>
+					}
+				</td>
+			</tr>
+		</tbody>
+	</table>
+	if v.Open.ProxyOpen || v.Open.DashOpen {
+		<div class="banner warn">
+			Open surfaces are a security choice, not a default to keep: config editing is remote control
+			of the whole fleet. Set the missing variables and restart; over plain HTTP, put Basic auth behind TLS.
+		</div>
+	}
+
+	<h2>Usage retention</h2>
+	<div class="panel">
+		if v.Fields[len(v.Fields)-1].Value != "0" {
+			<p>
+				Pruning is <strong>irreversible</strong>: rows older than
+				{ v.Fields[len(v.Fields)-1].Value } days are deleted at startup and once a day.
+				Prices, configuration and exported CSVs are never touched.
+			</p>
+		} else {
+			<p>Retention is off: every usage row is kept forever until you set <code>retention_days</code>.</p>
+			<p class="hint">Pruning, once enabled, is irreversible.</p>
+		}
+		<form
+			hx-post="/dashboard/action/prune/run"
+			hx-target="#settings-result"
+			hx-confirm="Pruning is irreversible. Delete usage rows older than the retention window now?"
+		>
+			<button type="submit" class="danger">Run prune now</button>
+		</form>
+	</div>
+}

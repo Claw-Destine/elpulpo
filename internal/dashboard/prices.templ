@@ -1,0 +1,191 @@
+package dashboard
+
+import "elpulpo/internal/catalog"
+
+// PricesPage: the prices section editor (empty section collapses to null —
+// the export then omits prices), the "no price set" names from usage, and
+// the read-only catalogue with exact-match Apply.
+templ PricesPage(d *Deps, csrf string, v PricesView) {
+	@Layout("Prices", "prices", csrf, d, func() templ.Component { return PricesFragment(v) })
+}
+
+templ PricesFragment(v PricesView) {
+	<div id="prices-body" hx-get="/dashboard/part/prices" hx-trigger="elpulpo-changed from:body" hx-swap="outerHTML">
+		<h1>Prices</h1>
+		if v.Err != "" {
+			<div class="banner error">{ v.Err }</div>
+		}
+		<p class="hint">
+			Reference prices per 1M tokens for the savings view. The whole section is optional:
+			with no entries, savings are off and the YAML export omits <code>prices</code>.
+			Names seen in usage that match no entry are listed below as <em>no price set</em> —
+			never silently counted as zero.
+		</p>
+		<h2>Price entries</h2>
+		<div class="panel">
+			<div id="prices-msg" class="msg" aria-live="polite"></div>
+			<form hx-post="/dashboard/action/prices/save" hx-target="#prices-msg">
+				<input type="hidden" name="h" value={ v.Hash }/>
+				<label>
+					Document currency (ISO 4217)
+					<input name="currency" value={ v.Currency } maxlength="3" placeholder="USD"/>
+				</label>
+				<table class="grid">
+					<thead>
+						<tr>
+							<th>Base model name</th>
+							<th>Aliases (comma-separated)</th>
+							<th class="num">Input</th>
+							<th class="num">Output</th>
+							<th class="num">Cached input</th>
+							<th class="num">Reasoning out</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range v.Rows {
+							<tr>
+								<td><input type="text" name="model" value={ row.Model }/></td>
+								<td><input type="text" name="aliases" value={ row.Aliases }/></td>
+								<td><input type="text" name="input" value={ row.Input } size="10"/></td>
+								<td><input type="text" name="output" value={ row.Output } size="10"/></td>
+								<td><input type="text" name="cached_input" value={ row.Cached } size="10" placeholder="= input"/></td>
+								<td><input type="text" name="reasoning_output" value={ row.Reasoning } size="10" placeholder="= output"/></td>
+								<td>
+									<button type="submit" class="danger" name="delete_model" value={ row.Model } hx-confirm="Remove this price entry?">Delete</button>
+								</td>
+							</tr>
+						}
+						<tr>
+							<td><input type="text" name="model" placeholder="(add entry)"/></td>
+							<td><input type="text" name="aliases" placeholder="alias1, alias2"/></td>
+							<td><input type="text" name="input" size="10"/></td>
+							<td><input type="text" name="output" size="10"/></td>
+							<td><input type="text" name="cached_input" size="10" placeholder="= input"/></td>
+							<td><input type="text" name="reasoning_output" size="10" placeholder="= output"/></td>
+							<td></td>
+						</tr>
+					</tbody>
+				</table>
+				<button type="submit">Save prices</button>
+				<span class="hint">
+					Editing rows and “Save prices” replaces the whole section; deleting the last entry drops it.
+					Rates are per 1M tokens. Cached input falls back to input, reasoning output to output.
+				</span>
+			</form>
+		</div>
+
+		<h2>No price set</h2>
+		if len(v.NoPrice) == 0 {
+			<p class="muted">
+				Every base model name seen in usage has a price entry (or there is no usage yet).
+			</p>
+		} else {
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Base model name (from usage)</th>
+						<th>Catalogue match</th>
+						<th class="num">Rates USD/1M (in / out / cached / reasoning)</th>
+						<th>Apply</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, o := range v.NoPrice {
+						<tr>
+							<td class="mono">{ o.Name }</td>
+							<td>
+								if o.Match != nil {
+									<span class="mono">{ o.Match.Provider } / { o.Match.Model }</span>
+								} else {
+									<span class="muted">no catalogue match</span>
+								}
+							</td>
+							<td class="num mono">
+								if o.Match != nil {
+									{ ratesText(o.Match) }
+								} else {
+									<span class="muted">—</span>
+								}
+							</td>
+							<td>
+								if o.Match != nil {
+									<form hx-post="/dashboard/action/catalog/apply" hx-target="#prices-msg">
+										<input type="hidden" name="h" value={ v.Hash }/>
+										<input type="hidden" name="model" value={ o.Name }/>
+										<label class="hint">
+											<input type="checkbox" name="overwrite" value="true"/>
+											overwrite existing entry
+										</label>
+										<button type="submit">Apply</button>
+									</form>
+								}
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+			<p class="hint">
+				Applying an exact catalogue match writes its rates into the <code>prices</code> section
+				(created with <code>currency: USD</code> when absent) — an explicit act, never automatic.
+				Applying over an existing entry requires the overwrite confirmation;
+				a document currency other than USD is refused (no currency conversion).
+			</p>
+		}
+
+		<h2>Price catalogue</h2>
+		<div class="panel">
+			<p>
+				Version <code>{ v.Catalog.Version }</code>
+				<span class="muted"> · as of </span><code>{ v.Catalog.AsOf }</code>
+				<span class="muted"> · currency </span>{ v.Catalog.Currency }
+				if v.Catalog.Stale {
+					<span class="flag">stale — older than 180 days</span>
+				}
+			</p>
+			<p class="hint">
+				Hand-curated USD seed list; offline by construction. Savings from catalogue-derived
+				prices are estimates of the cloud bill avoided, not an invoice.
+			</p>
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Provider</th>
+						<th>Model</th>
+						<th class="num">Input</th>
+						<th class="num">Output</th>
+						<th class="num">Cached input</th>
+						<th class="num">Reasoning out</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, rate := range v.Catalog.Rates {
+						<tr>
+							<td>{ rate.Provider }</td>
+							<td class="mono">{ rate.Model }</td>
+							<td class="num">{ fmtPrice(rate.Input) }</td>
+							<td class="num">{ fmtPrice(rate.Output) }</td>
+							<td class="num">{ fmtPrice(rate.CachedInput) }</td>
+							<td class="num">{ fmtPrice(rate.ReasoningOutput) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+}
+
+func ratesText(r *catalog.Rate) string {
+	s := fmtPrice(r.Input) + " / " + fmtPrice(r.Output)
+	if r.CachedInput != nil {
+		s += " / " + fmtPrice(r.CachedInput)
+	} else {
+		s += " / —"
+	}
+	if r.ReasoningOutput != nil {
+		s += " / " + fmtPrice(r.ReasoningOutput)
+	} else {
+		s += " / —"
+	}
+	return s
+}

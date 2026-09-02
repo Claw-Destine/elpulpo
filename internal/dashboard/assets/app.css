@@ -1,0 +1,201 @@
+/* El Pulpo dashboard — small, dark-friendly, same-origin only.
+   Behaviour lives in htmx hx-attributes; nothing here needs JavaScript,
+   and CSP (default-src 'self') allows no inline styles: class names only. */
+
+:root {
+	color-scheme: dark light;
+	--bg: #12151a;
+	--panel: #1a1f27;
+	--panel-2: #212836;
+	--text: #d7dde5;
+	--muted: #8a94a3;
+	--accent: #4cc2a8;
+	--warn-bg: #4a3a12;
+	--warn-text: #f2d675;
+	--err-bg: #4a1a1a;
+	--err-text: #f0a3a3;
+	--up: #6fd08c;
+	--down: #ef6a6a;
+	--border: #2c3542;
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--bg: #f5f6f8;
+		--panel: #ffffff;
+		--panel-2: #eef0f4;
+		--text: #1d232b;
+		--muted: #5c6672;
+		--accent: #0d8a70;
+		--border: #d4dae2;
+	}
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.topbar {
+	display: flex;
+	align-items: center;
+	gap: 1.5rem;
+	padding: 0.6rem 1.2rem;
+	background: var(--panel);
+	border-bottom: 1px solid var(--border);
+}
+
+.brand { font-weight: 700; letter-spacing: 0.02em; }
+
+nav { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+
+nav a {
+	color: var(--muted);
+	text-decoration: none;
+	padding: 0.3rem 0.7rem;
+	border-radius: 6px;
+}
+
+nav a:hover { color: var(--text); background: var(--panel-2); }
+nav a.active { color: var(--accent); background: var(--panel-2); }
+
+main { padding: 1rem 1.4rem 3rem; max-width: 1400px; }
+
+h1 { font-size: 1.35rem; margin: 0.8rem 0 0.4rem; }
+h2 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+
+a { color: var(--accent); }
+
+.banner {
+	margin: 0.6rem 0;
+	padding: 0.55rem 0.9rem;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+}
+
+.banner.warn { background: var(--warn-bg); color: var(--warn-text); }
+.banner.error { background: var(--err-bg); color: var(--err-text); }
+
+.panel {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.8rem 1rem;
+	margin: 0.6rem 0;
+}
+
+table.grid {
+	border-collapse: collapse;
+	width: 100%;
+	margin: 0.5rem 0;
+	background: var(--panel);
+}
+
+table.grid th, table.grid td {
+	border: 1px solid var(--border);
+	padding: 0.3rem 0.55rem;
+	text-align: left;
+	vertical-align: top;
+}
+
+table.grid th {
+	background: var(--panel-2);
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+table.grid th a { text-decoration: none; color: inherit; }
+table.grid td.num, table.grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid tr:nth-child(even) td { background: var(--panel-2); }
+
+tr.estimated td { font-style: italic; background: var(--warn-bg) !important; }
+
+.up { color: var(--up); font-weight: 600; }
+.down { color: var(--down); font-weight: 600; }
+.flag {
+	background: var(--warn-bg);
+	color: var(--warn-text);
+	border-radius: 5px;
+	padding: 0 0.35rem;
+	font-size: 0.8em;
+	white-space: nowrap;
+}
+.muted { color: var(--muted); }
+.hint { color: var(--muted); font-size: 0.85rem; }
+.mono, code {
+	font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+	font-size: 0.9em;
+}
+
+button {
+	background: var(--accent);
+	color: #0b0e12;
+	border: 0;
+	border-radius: 6px;
+	padding: 0.35rem 0.8rem;
+	font-weight: 600;
+	cursor: pointer;
+	margin: 0.15rem 0.15rem 0.15rem 0;
+}
+
+button.danger { background: var(--down); color: #16090b; }
+button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+
+input, select, textarea {
+	background: var(--panel-2);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.45rem;
+	font: inherit;
+	max-width: 100%;
+}
+
+textarea { display: block; width: 100%; font-family: ui-monospace, Menlo, monospace; }
+
+label { display: inline-block; margin: 0.15rem 0; }
+label input, label textarea, label select { display: block; margin-top: 0.15rem; }
+
+form { margin: 0.4rem 0; }
+
+details.host, details.server {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.4rem 0.7rem;
+	margin: 0.45rem 0;
+}
+
+details.host > summary, details.server > summary {
+	cursor: pointer;
+	font-weight: 600;
+	padding: 0.2rem 0;
+}
+
+.msg { min-height: 1.2rem; font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-word; }
+
+.filters {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 0.6rem;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.7rem;
+	margin: 0.6rem 0;
+}
+
+.filters label { font-size: 0.8rem; color: var(--muted); }
+.filters select[multiple] { min-height: 5.5rem; width: 100%; }
+
+.pager { display: flex; gap: 0.5rem; align-items: center; margin: 0.5rem 0; }
+.pager a { text-decoration: none; padding: 0.15rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; }
+
+.exports { display: flex; gap: 1rem; margin: 0.6rem 0; }
+
+.err { color: var(--err-text); }
+.nowrap { white-space: nowrap; }

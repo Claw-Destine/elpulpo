@@ -559,3 +559,46 @@ Whatever gets built must not disturb three v1 invariants: `GET /v1/models` stays
 requestable vocabulary, so a pool must appear there; savings keep keying off the *serving* member's
 model name; and `host_addresses` election stays per server, below any pool — a pool never chooses an
 address. Aliases remain pricing-only, so a pool is the only routing indirection that can exist.
+
+## Interpretations taken during implementation (v1, as built)
+
+These are the points where the v1 text left room for choice; the implementation resolved them as
+follows, and the acceptance suite encodes these readings.
+
+1. **Publishing is gated on a live address.** A server publishes its models only while `up` *and*
+   holding an active address. This is what makes scenario 3's "withdraw within one interval" true
+   without contradicting scenario 19's three-round down-marking: between an active-address failure
+   and the re-election, the server could not answer, so it must not be listed.
+2. **Re-election after an active-address failure walks the list within the same round** (scenario
+   18): the failed probe is followed by attempts at the other addresses in preference order,
+   immediately. `consec_failures` counts rounds in which *no* address answered, not probes.
+3. **Price entries require `input` and `output`**; `cached_input`/`reasoning_output` are optional
+   and fall back to them. A price entry with only fallbacks would make savings meaningless.
+4. **`postfix` obeys the id grammar** (`[a-z0-9][a-z0-9-]{0,31}`), as do host and server ids, so
+   published ids never take arbitrary shapes. Alias names follow the model-name pattern and must be
+   globally unique across every model name *and* every alias — the symmetric collision of scenario
+   22 is therefore rejected whichever path carries it, and both offending paths are reported.
+5. **A 4xx from the upstream is a faithfully forwarded answer**: the client receives the upstream
+   status and body as-is, and the usage row records `status: ok` with that `http_status`. Only 5xx,
+   timeout, upstream error, and cancellation are non-`ok` statuses.
+6. **A request cancelled before the first byte upstream** records `status: cancelled` with
+   `http_status: 499` (the client itself is gone; whatever we answered is moot).
+7. **Unpriced groups carry no amount**: the summary flags them, the grand total excludes them, the
+   CSV leaves the amount cell empty. There is no conversion and no estimate.
+8. **Day groups and the today/month presets use the server's local timezone** (single clock for
+   screens and exports).
+9. **Summary CSV shape**: `group_by,group,requests,tokens_in,tokens_out,tokens_cached,
+   tokens_reasoning,estimated_rows,p50_ms,p95_ms,amount,currency`, written as a `model` block, a
+   `host` block, a `day` block, and one `total` row.
+10. **The canonical export uses the Go YAML encoder's block style** (sequence items indented under
+    their key); the document examples use the compact-dash style. Import accepts both shapes — only
+    the live configuration is canonicalised. Byte stability and materialised defaults are pinned by
+    a golden file.
+11. **Settings range errors print bounds in seconds** (`5s to 3600s`), matching the input form.
+12. **Duration settings have a 1s floor**; `total_timeout` and `retention_days` additionally accept
+    `0`/`off` as "disabled". Acceptance timeouts therefore run at 1s settings against ≥2.5s stalls.
+13. **CSRF uses cookie `elpulpo_csrf` and header `X-CSRF-Token`** on every dashboard mutation.
+14. **Unknown-but-known-shaped OpenAI paths under `/v1`** (e.g. `/v1/embeddings`) answer
+    `404 unsupported_endpoint`; everything else is a plain 404.
+15. **`ttft_ms` is never 0 once a first frame reached the client**: a sub-millisecond first byte is
+    recorded as 1, so "streaming ⇒ `ttft_ms > 0`" holds without a timer artifact.

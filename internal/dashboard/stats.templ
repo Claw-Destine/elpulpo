@@ -1,0 +1,309 @@
+package dashboard
+
+import (
+	"strings"
+
+	"elpulpo/internal/usage"
+)
+
+// StatsPage: filters (period presets + custom range, AND-combined
+// multi-selects, model substring, group_by) above an htmx-polled fragment
+// with the grouped summary, the sortable/paginated rows table and the two
+// CSV export links — all carrying the current filters.
+templ StatsPage(d *Deps, csrf string, v StatsView) {
+	@Layout("Statistics", "stats", csrf, d, func() templ.Component { return StatsMain(v) })
+}
+
+templ StatsMain(v StatsView) {
+	<h1>Statistics</h1>
+	@StatsFiltersForm(v)
+	@StatsFragment(v)
+}
+
+templ StatsFiltersForm(v StatsView) {
+	<form
+		id="stats-form"
+		class="filters"
+		hx-get="/dashboard/part/stats"
+		hx-target="#stats-body"
+		hx-swap="outerHTML"
+		hx-push-url="true"
+	>
+		<label>
+			Period
+			<select name="period" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+				<option value="all" selected={ v.Q.Period == "all" }>All time</option>
+				<option value="today" selected={ v.Q.Period == "today" }>Today</option>
+				<option value="month" selected={ v.Q.Period == "month" }>This month</option>
+				<option value="custom" selected={ v.Q.Period == "custom" }>Custom range</option>
+			</select>
+		</label>
+		<label>
+			Start (local)
+			<input type="date" name="start" value={ v.Q.Start }/>
+		</label>
+		<label>
+			End (local, inclusive)
+			<input type="date" name="end" value={ v.Q.End }/>
+		</label>
+		<label>
+			Hosts (multi-select, AND)
+			<select name="host" multiple size="4">
+				for _, o := range v.Options.Hosts {
+					<option value={ o } selected={ selected(v.Q.Hosts, o) }>{ o }</option>
+				}
+			</select>
+		</label>
+		<label>
+			Servers (multi-select, AND)
+			<select name="server" multiple size="4">
+				for _, o := range v.Options.Servers {
+					<option value={ o } selected={ selected(v.Q.Servers, o) }>{ o }</option>
+				}
+			</select>
+		</label>
+		<label>
+			Endpoints (multi-select, AND)
+			<select name="endpoint" multiple size="4">
+				for _, o := range v.Options.Endpoints {
+					<option value={ o } selected={ selected(v.Q.Endpoints, o) }>{ o }</option>
+				}
+			</select>
+		</label>
+		<label>
+			Statuses (multi-select, AND)
+			<select name="status" multiple size="4">
+				for _, o := range v.Options.Statuses {
+					<option value={ o } selected={ selected(v.Q.Statuses, o) }>{ o }</option>
+				}
+			</select>
+		</label>
+		<label>
+			Model contains
+			<input type="text" name="model" value={ v.Q.Model }/>
+		</label>
+		<label>
+			Group summary by
+			<select name="group_by" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+				<option value="model" selected={ v.Q.GroupBy == "model" }>model</option>
+				<option value="host" selected={ v.Q.GroupBy == "host" }>host</option>
+				<option value="server" selected={ v.Q.GroupBy == "server" }>server</option>
+				<option value="day" selected={ v.Q.GroupBy == "day" }>day</option>
+			</select>
+		</label>
+		<label>
+			Rows per page
+			<select name="page_size" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+				<option value="25" selected={ v.Q.PageSize == 25 }>25</option>
+				<option value="50" selected={ v.Q.PageSize == 50 }>50</option>
+				<option value="100" selected={ v.Q.PageSize == 100 }>100</option>
+				<option value="250" selected={ v.Q.PageSize == 250 }>250</option>
+			</select>
+		</label>
+		<div>
+			<button type="submit">Apply</button>
+			<a href="/dashboard/stats" class="hint">reset</a>
+		</div>
+	</form>
+}
+
+templ StatsFragment(v StatsView) {
+	<div
+		id="stats-body"
+		hx-get={ "/dashboard/part/stats?" + v.Q.canon() }
+		hx-trigger="every 5s, elpulpo-changed from:body"
+		hx-swap="outerHTML"
+	>
+		if v.Err != "" {
+			<div class="banner error">{ v.Err }</div>
+		}
+		if v.RetentionDays > 0 {
+			<p class="hint">
+				Retention is on: usage history beyond { fmtI(int64(v.RetentionDays)) } days is not
+				available — older usage is absent, not zero.
+			</p>
+		}
+		if v.Summary != nil {
+			<h2>Grouped summary <span class="muted">by { v.Q.GroupBy }</span></h2>
+			<table class="grid">
+				<thead>
+					<tr>
+						<th>Group</th>
+						<th class="num">Requests</th>
+						<th class="num">Tokens in</th>
+						<th class="num">Tokens out</th>
+						<th class="num">Cached</th>
+						<th class="num">Reasoning</th>
+						<th class="num">p50 ms</th>
+						<th class="num">p95 ms</th>
+						<th class="num">Amount { amountSuffix(v.Summary) }</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, g := range v.Summary.Groups {
+						<tr>
+							<td class="mono" title={ joinComma(g.Members) }>{ g.Key }</td>
+							<td class="num">{ fmtI(g.Requests) }</td>
+							<td class="num">{ fmtI(g.TokensIn) }</td>
+							<td class="num">{ fmtI(g.TokensOut) }</td>
+							<td class="num">{ fmtI(g.TokensCached) }</td>
+							<td class="num">{ fmtI(g.TokensReasoning) }</td>
+							<td class="num">{ fmtI(g.P50Ms) }</td>
+							<td class="num">{ fmtI(g.P95Ms) }</td>
+							<td class="num">
+								if g.Priced {
+									{ fmtAmt(g.Amount) }
+								} else {
+									<span class="muted">no price set</span>
+								}
+							</td>
+						</tr>
+					}
+					if len(v.Summary.Groups) == 0 {
+						<tr>
+							<td colspan="9" class="muted">No rows in this selection.</td>
+						</tr>
+					}
+					<tr class="totals">
+						<td>
+							<strong>TOTAL</strong>
+							if v.Summary.GrandTotal.EstimatedRows > 0 {
+								<span class="flag">{ fmtI(v.Summary.GrandTotal.EstimatedRows) } estimated rows</span>
+							}
+						</td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.Requests) }</strong></td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.TokensIn) }</strong></td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.TokensOut) }</strong></td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.TokensCached) }</strong></td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.TokensReasoning) }</strong></td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.P50Ms) }</strong></td>
+						<td class="num"><strong>{ fmtI(v.Summary.GrandTotal.P95Ms) }</strong></td>
+						<td class="num">
+							if v.Summary.GrandTotal.Priced {
+								<strong>{ fmtAmt(v.Summary.GrandTotal.Amount) }</strong>
+								if v.Summary.GrandTotal.NoPrice {
+									<div class="hint muted">excludes no-price names</div>
+								}
+							} else {
+								if v.Summary.GrandTotal.Requests > 0 {
+									<span class="muted">no price set</span>
+								} else {
+									<span class="muted">—</span>
+								}
+							}
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			if len(v.Summary.NoPriceNames) > 0 {
+				<p class="hint">
+					No price set (excluded from the grand total):
+					<span class="mono">{ strings.Join(v.Summary.NoPriceNames, ", ") }</span>
+				</p>
+			}
+		}
+		<h2>Requests</h2>
+		<div class="exports">
+			<a class="mono" href={ "/dashboard/export/rows.csv?" + v.Q.canon() }>export rows.csv</a>
+			<a class="mono" href={ "/dashboard/export/summary.csv?" + v.Q.canon() }>export summary.csv</a>
+			<span class="hint">Exports contain exactly the current filters and period.</span>
+		</div>
+		<table class="grid">
+			<thead>
+				<tr>
+					@SortHeader(v, "timestamp", "Timestamp")
+					@SortHeader(v, "host", "Host")
+					@SortHeader(v, "server", "Server")
+					@SortHeader(v, "model", "Model (published id)")
+					@SortHeader(v, "endpoint", "Endpoint")
+					@SortHeader(v, "status", "Status")
+					@SortHeader(v, "http_status", "HTTP")
+					@SortHeader(v, "tokens_in", "In")
+					@SortHeader(v, "tokens_out", "Out")
+					@SortHeader(v, "tokens_cached", "Cached")
+					@SortHeader(v, "tokens_reasoning", "Reasoning")
+					@SortHeader(v, "estimated", "Est.")
+					@SortHeader(v, "latency_ms", "Latency ms")
+					@SortHeader(v, "ttft_ms", "TTFT ms")
+				</tr>
+			</thead>
+			<tbody>
+				for _, row := range v.Rows {
+					<tr class={ rowClass(row) }>
+						<td class="nowrap">{ fmtTs(row.TsMs) }</td>
+						<td>{ row.HostID }</td>
+						<td>{ row.ServerID }</td>
+						<td class="mono">{ row.Model }</td>
+						<td>{ row.Endpoint }</td>
+						<td>{ row.Status }</td>
+						<td class="num">{ fmtI(int64(row.HTTPStatus)) }</td>
+						<td class="num">{ fmtI(row.TokensIn) }</td>
+						<td class="num">{ fmtI(row.TokensOut) }</td>
+						<td class="num">{ fmtI(row.TokensCached) }</td>
+						<td class="num">{ fmtI(row.TokensReasoning) }</td>
+						<td>
+							if row.Estimated {
+								<span class="flag">est</span>
+							}
+						</td>
+						<td class="num">{ fmtI(row.LatencyMs) }</td>
+						<td class="num">{ optI(row.TTFTMs) }</td>
+					</tr>
+				}
+				if len(v.Rows) == 0 {
+					<tr>
+						<td colspan="14" class="muted">No usage rows in this selection.</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+		<div class="pager">
+			if v.Q.Page > 1 {
+				<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("page", fmtI(int64(v.Q.Page-1))) } hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true">← prev</a>
+			}
+			<span class="muted">
+				page { fmtI(int64(v.Q.Page)) } / { fmtI(int64(v.Pages)) } — { fmtI(v.Total) } rows
+			</span>
+			if v.Q.Page < v.Pages {
+				<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("page", fmtI(int64(v.Q.Page+1))) } hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true">next →</a>
+			}
+		</div>
+	</div>
+}
+
+templ SortHeader(v StatsView, col, label string) {
+	<th>
+		<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("sort", col, "dir", v.Q.sortFor(col)) } hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true">{ label }{ sortMark(v, col) }</a>
+	</th>
+}
+
+func sortMark(v StatsView, col string) string {
+	if v.Q.Sort != col {
+		return ""
+	}
+	if v.Q.Desc {
+		return " ▾"
+	}
+	return " ▴"
+}
+
+func rowClass(r usage.Row) string {
+	if r.Estimated {
+		return "estimated"
+	}
+	return ""
+}
+
+func optI(v *int64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmtI(*v)
+}
+
+func amountSuffix(s *usage.Summary) string {
+	if s.Currency != "" {
+		return "(" + s.Currency + ")"
+	}
+	return ""
+}
