@@ -438,14 +438,29 @@ func (m *Manager) probeServer(ctx context.Context, st *ServerState) {
 		models, err := m.probeAddr(ctx, st, set, addr)
 		if err == nil {
 			st.mu.Lock()
-			prev := st.active
+			prev, prevModels := st.active, st.models
 			switch {
 			case prev != "" && prev != addr:
-				m.log.Info("server switched address", "host", st.HostID, "server", st.ServerID, "from", prev, "to", addr)
+				m.log.Info("server switched address", "host", st.HostID, "server", st.ServerID,
+					"from", prev, "to", addr, "model_count", len(models), "models", models)
 			case prev == "" && up:
-				m.log.Info("server re-elected an address", "host", st.HostID, "server", st.ServerID, "address", addr)
+				m.log.Info("server re-elected an address", "host", st.HostID, "server", st.ServerID,
+					"address", addr, "model_count", len(models), "models", models)
 			case !up:
-				m.log.Info("server is up", "host", st.HostID, "server", st.ServerID, "address", addr)
+				m.log.Info("server is up", "host", st.HostID, "server", st.ServerID,
+					"address", addr, "model_count", len(models), "models", models)
+			default:
+				// Steady state: the connect line already named the models.
+				m.log.Debug("probe ok", "host", st.HostID, "server", st.ServerID,
+					"address", addr, "model_count", len(models))
+			}
+			// A list that moved while the same address kept answering is the
+			// interesting event: models loaded, unloaded or pulled.
+			if up && prev == addr && !sameModels(prevModels, models) {
+				added, removed := diffModels(prevModels, models)
+				m.log.Info("server model list changed", "host", st.HostID, "server", st.ServerID,
+					"address", addr, "added", added, "removed", removed,
+					"model_count", len(models), "models", models)
 			}
 			st.up, st.consecFail, st.active, st.models = true, 0, addr, models
 			st.lastErr, st.lastProbe = "", time.Now()
@@ -453,14 +468,15 @@ func (m *Manager) probeServer(ctx context.Context, st *ServerState) {
 			m.RebuildTable()
 			return
 		}
+		m.log.Debug("probe failed", "host", st.HostID, "server", st.ServerID, "address", addr, "err", err)
 		lastErr = err.Error()
 	}
 	// The active address (if any) failed: re-elect from position 0 next
 	// round. Nothing answered — one consecutive failure for the server.
 	st.mu.Lock()
 	if active != "" {
-		m.log.Info("active address failed, re-electing from the first address",
-			"host", st.HostID, "server", st.ServerID, "address", active)
+		m.log.Error("active address failed, re-electing from the first address",
+			"host", st.HostID, "server", st.ServerID, "address", active, "err", lastErr)
 		st.active = ""
 	}
 	st.consecFail++
@@ -472,10 +488,59 @@ func (m *Manager) probeServer(ctx context.Context, st *ServerState) {
 	}
 	st.mu.Unlock()
 	if wentDown {
-		m.log.Warn("server is down after 3 consecutive probe failures",
-			"host", st.HostID, "server", st.ServerID, "last_error", lastErr)
+		m.log.Error("server is down after 3 consecutive probe failures",
+			"host", st.HostID, "server", st.ServerID, "last_error", lastErr,
+			"models_withdrawn", modelsOf(st))
 	}
 	m.RebuildTable()
+}
+
+// modelsOf snapshots the model list a server last published, so the line
+// announcing it went dark also says what clients just lost.
+func modelsOf(st *ServerState) []string {
+	_, _, _, _, _, models, _, _ := st.snapshot()
+	return models
+}
+
+// sameModels compares two model lists as sets: hosts are free to list their
+// models in any order, and a reorder is not a change.
+func sameModels(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, m := range a {
+		seen[m]++
+	}
+	for _, m := range b {
+		if seen[m]--; seen[m] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// diffModels names what a server stopped and started publishing.
+func diffModels(prev, now []string) (added, removed []string) {
+	inPrev := make(map[string]bool, len(prev))
+	for _, m := range prev {
+		inPrev[m] = true
+	}
+	inNow := make(map[string]bool, len(now))
+	for _, m := range now {
+		inNow[m] = true
+	}
+	for _, m := range now {
+		if !inPrev[m] {
+			added = append(added, m)
+		}
+	}
+	for _, m := range prev {
+		if !inNow[m] {
+			removed = append(removed, m)
+		}
+	}
+	return added, removed
 }
 
 func (m *Manager) probeAddr(ctx context.Context, st *ServerState, set *config.Settings, addr string) ([]string, error) {

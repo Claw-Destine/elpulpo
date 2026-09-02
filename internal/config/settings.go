@@ -91,7 +91,9 @@ func (m *SettingsManager) Load(ctx context.Context) error {
 			continue
 		}
 		if viol := applySettingField(&s, k, v); viol != nil {
-			m.log.Warn("ignoring persisted setting that no longer validates", "key", k, "value", v, "err", viol.Msg)
+			// Config that will not validate is a failure to report, even when
+			// the default it falls back to keeps the process running.
+			m.log.Error("ignoring persisted setting that no longer validates", "key", k, "value", v, "err", viol.Msg)
 		}
 	}
 	m.cur.Store(&s)

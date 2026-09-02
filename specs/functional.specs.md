@@ -251,9 +251,14 @@ untouched. A client's explicit `stream_options` always wins.
 - `200` with a parseable payload is up; three consecutive probe failures mark it down (anti-flap); the
   first success marks it up again.
 - Every successful probe refreshes that server's model list, so models pulled or deleted on the
-  backend become visible or disappear within one interval.
+  backend become visible or disappear within one interval. Reaching a server is an `INFO` event that
+  names the address and the models that host returned ("server is up", "server switched address",
+  "server re-elected an address"), and a list that moves while the same address keeps answering is
+  its own `INFO` line naming the ids added and removed. A routine probe with nothing new to report
+  says nothing at `INFO` — it is visible at `debug`.
 - A down server publishes no models, refuses routed requests as above, and shows its last error in
-  the dashboard.
+  the dashboard. Going down is `ERROR`, naming the models clients just lost; so is losing the active
+  address, even when a fallback keeps the server up.
 - On startup El Pulpo probes immediately: the dashboard serves at once, `GET /v1/models` is empty
   until the first probes complete.
 
@@ -342,7 +347,14 @@ a file is not a display.
 
 Every request that is routed to a server writes one row when it terminates — success, upstream
 error, upstream timeout or cancellation. Requests rejected before routing (unknown model, `413`,
-`429`) are not usage rows; they are counted and logged separately.
+`429`) are not usage rows; they are counted and logged as their own `chat request` line at `WARN`,
+with a `reason`. Every routed request emits exactly one `chat request` line as well — `INFO` when
+the client got an answer, `ERROR` on an upstream failure — carrying host, server, published model,
+`stream`, status, HTTP status, latency, queue wait, token counts and `ttft_ms` on streams, so the
+log and the usage table say the same thing about what reached a server. Failure means failure: an
+`ERROR` line is something El Pulpo or its fleet got wrong, never a client asking for a model that is
+not published or hitting a concurrency limit — the two startup warnings about unset credentials are
+`WARN` for the same reason. Credentials never appear in either log or table.
 
 | field | notes |
 | --- | --- |

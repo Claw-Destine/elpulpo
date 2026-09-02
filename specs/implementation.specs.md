@@ -88,6 +88,13 @@ additive as long as nothing above that interface emits SQL.
 7. Usage comes from the last usage-bearing frame or body; absent usage means an estimate plus the
    `estimated` flag. `ttft_ms` is recorded at the first frame written.
 8. The row is handed to the writer queue, not to SQLite, from the request goroutine.
+9. The same terminal point logs exactly one `chat request` line: the row's host/server/model/status
+   plus latency, `wait_ms` (time queued for a slot), token counts, `estimated`, and `ttft_ms` on
+   streams. `ERROR` on `upstream_error`/`upstream_timeout`, `INFO` otherwise. A request turned away
+   before routing logs the same `msg` at `WARN` with `status=rejected` and a `reason` and writes no
+   row (a 5xx among them is `ERROR` — that one is our failure), so one line always equals one
+   row-or-rejection. `DEBUG` adds the routing decision (id → host/server/address, base name sent
+   upstream), the upstream's own response status, and each probe with its model count.
 
 A per-server `http.Transport` keeps the idle pool and error surface from being shared across servers,
 with `DisableCompression: true` so bytes arrive as the upstream sent them.
@@ -130,6 +137,13 @@ mutex-guarded struct read by both the router and the dashboard. Election follows
 `host_addresses` from index 0, three consecutive all-fail rounds mark down, no fail-back, reset on a
 config change. The catalogue behind `/v1/models` is rebuilt from these states, which is why a server
 going down withdraws its models within one interval without extra machinery.
+
+The connect line names the address and the model list returned ("server is up" / "switched address"
+/ "re-elected an address", `INFO`); a list that differs from the last one under the same active
+address is a separate `INFO` line with `added`/`removed` computed as sets, so a host reordering its
+models logs nothing. An unchanged probe logs at `DEBUG` only. A failed address walk (`ERROR`, once
+per round — the active address is cleared, so it cannot repeat) and the down transition (`ERROR`,
+with the models withdrawn) are the two failure lines.
 
 ## Usage store
 

@@ -130,6 +130,51 @@ address in preference order serves until it fails, then the next — with
 the switch logged and no fail-back. Three consecutive probe failures mark
 a server down (first success revives it).
 
+## Logs
+
+Everything is structured `slog` text on stderr, filtered by
+`ELPULPO_LOG_LEVEL`. Every request that reaches
+`/v1/chat/completions` ends in exactly one line, `msg="chat request"`:
+
+```
+level=INFO msg="chat request" remote=127.0.0.1:42974 host=minion1 server=ollama model=qwen3.8:27b-ollama@minion1 stream=true status=ok http_status=200 latency_ms=812 wait_ms=0 tokens_in=111 tokens_out=42 tokens_cached=0 tokens_reasoning=0 estimated=false ttft_ms=140
+```
+
+`status` is the usage-row status (`ok`, `cancelled`, `upstream_error`,
+`upstream_timeout`), so `grep 'msg="chat request"'` and a `SELECT` on the
+usage table agree on what reached a server: one line per row. A request
+turned away before routing — bad JSON, missing `model`, `413`, unknown
+model, `429` after the queue timeout, a server that went down while
+queued — logs the same `msg` at `WARN` with `status=rejected` and a
+`reason`, and writes no row. `wait_ms` is the time spent waiting for a
+concurrency slot; `ttft_ms` appears on streams. Tokens, passwords and
+`auth_token` values never reach the log.
+
+**Reaching a host** is an INFO event naming the models it returned:
+
+```
+level=INFO msg="server is up" host=minion1 server=ollama address=127.0.0.1 model_count=2 models="[qwen3.8:27b gemma4:31b]"
+level=INFO msg="server model list changed" host=minion1 server=ollama address=127.0.0.1 added="[llama3.3:70b]" removed="[gemma4:31b]" model_count=2 models="[qwen3.8:27b llama3.3:70b]"
+```
+
+The list is named when a server is connected — coming up, switching or
+re-electing an address — and again whenever it moves under an address that
+kept answering. A routine probe with nothing new says nothing at INFO.
+
+### Levels
+
+| level | what lands there |
+| --- | --- |
+| `ERROR` | a failure of El Pulpo or its fleet: `upstream_error`, `upstream_timeout`, a server down after 3 failed probes (naming the models withdrawn), an active address lost to a fallback, dropped usage rows, prune failures, config that will not load or save, render and export failures |
+| `WARN` | a client got a `4xx`: unknown model, `429` busy, `413` oversized, `400` bad payload; plus the two startup warnings for unset credentials |
+| `INFO` | one line per proxied request, host connections with the models returned, model-list changes, config load/reload, address switches, pruning |
+| `DEBUG` | the routing decision (id → host/server/address and the base name sent upstream), the upstream's own response code, every probe with its model count, each probe error as it happens |
+
+The rule for `ERROR`: something El Pulpo or a host got wrong. A client
+asking for a model that is not published, or hitting a concurrency limit,
+is a `WARN` — `grep level=ERROR` should read as the fleet's fault list,
+not a record of other people's typos.
+
 ## The dashboard
 
 - **Servers** — host/server cards with up/down, the active address

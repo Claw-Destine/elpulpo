@@ -405,7 +405,7 @@ func (a *App) Stop() error {
 	select {
 	case <-a.writerDone:
 	case <-time.After(30 * time.Second):
-		a.Log.Warn("usage writer did not drain within the shutdown grace")
+		a.Log.Error("usage writer did not drain within the shutdown grace; rows were dropped")
 	}
 	if err := a.Repo.Close(); err != nil && firstErr == nil {
 		firstErr = err

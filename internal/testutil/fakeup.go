@@ -162,23 +162,32 @@ func (u *Upstream) handleModels(w http.ResponseWriter, r *http.Request) {
 	u.Hits.Add(1)
 	u.mu.Lock()
 	u.lastHdr = r.Header.Clone()
+	models := append([]string(nil), u.Models...)
 	u.mu.Unlock()
 	out := map[string]any{}
 	if u.API == "ollama" {
 		var ms []map[string]string
-		for _, m := range u.Models {
+		for _, m := range models {
 			ms = append(ms, map[string]string{"name": m})
 		}
 		out["models"] = ms
 	} else {
 		var ms []map[string]string
-		for _, m := range u.Models {
+		for _, m := range models {
 			ms = append(ms, map[string]string{"id": m, "object": "model"})
 		}
 		out["data"] = ms
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// SetModels changes what the upstream lists, which is how a test drives a
+// model-list change on a server that stayed reachable.
+func (u *Upstream) SetModels(models ...string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.Models = models
 }
 
 func (u *Upstream) handleChat(w http.ResponseWriter, r *http.Request) {

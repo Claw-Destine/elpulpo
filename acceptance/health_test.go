@@ -136,8 +136,17 @@ func TestAcceptance_19_ThreeFailuresDown(t *testing.T) {
 		st, ok := stateFor(h, "m", "llm")
 		return ok && !st.Up && st.ConsecFails >= 3
 	})
-	if !strings.Contains(h.LogString(), "server is down after 3 consecutive probe failures") {
+	down := logLine(h.LogString(), "server is down after 3 consecutive probe failures")
+	if down == "" {
 		t.Fatalf("down transition must be logged:\n%s", h.LogString())
+	}
+	// A server going dark is a failure, not a warning, and the line says
+	// which models clients just lost.
+	if !strings.Contains(down, "level=ERROR") {
+		t.Fatalf("down transition must be ERROR:\n%s", down)
+	}
+	if !strings.Contains(down, "models_withdrawn=[qwen3.8:27b]") {
+		t.Fatalf("down transition must name the withdrawn models:\n%s", down)
 	}
 	for _, id := range h.ModelIDs() {
 		if strings.HasSuffix(id, "@m") {
@@ -177,5 +186,61 @@ func TestAcceptance_20_AddressEditReelection(t *testing.T) {
 	}
 	if up3.Hits.Load() == 0 {
 		t.Fatal("the new first address was never probed")
+	}
+}
+
+// TestHealthModelListLogging: connecting to a host logs, at INFO, the models
+// that host returned; a list that moves while the same address keeps answering
+// gets its own INFO line naming what was added and removed. Steady probes say
+// nothing at INFO.
+func TestHealthModelListLogging(t *testing.T) {
+	h := testutil.Start(t)
+	up := testutil.NewUpstream(t, "ollama", "alpha:1", "beta:2")
+	h.ApplyConfig(&config.Config{Hosts: []config.Host{
+		{ID: "m", HostAddresses: []string{"127.0.0.1"}, Servers: []config.Server{
+			{ID: "llm", Port: up.Port(), API: "ollama"},
+		}},
+	}})
+	h.WaitForModel("alpha:1-ollama@m")
+
+	connect := ""
+	h.Eventually(9*time.Second, "connect line naming the models", func() bool {
+		connect = logLine(h.LogString(), "server is up")
+		return connect != ""
+	})
+	for _, want := range []string{"level=INFO", "host=m", "server=llm", "address=127.0.0.1",
+		"model_count=2", `models="[alpha:1 beta:2]"`} {
+		if !strings.Contains(connect, want) {
+			t.Fatalf("connect line lacks %q:\n%s\nfull log:\n%s", want, connect, h.LogString())
+		}
+	}
+
+	// The same address now answers with a different list.
+	up.SetModels("alpha:1", "gamma:3")
+	h.WaitForModel("gamma:3-ollama@m")
+	h.WaitForNoModel("beta:2-ollama@m")
+
+	changed := ""
+	h.Eventually(9*time.Second, "model list change logged", func() bool {
+		changed = logLine(h.LogString(), "server model list changed")
+		return changed != ""
+	})
+	for _, want := range []string{"level=INFO", "host=m", "server=llm", "address=127.0.0.1",
+		"added=[gamma:3]", "removed=[beta:2]", "model_count=2", `models="[alpha:1 gamma:3]"`} {
+		if !strings.Contains(changed, want) {
+			t.Fatalf("change line lacks %q:\n%s", want, changed)
+		}
+	}
+
+	// Steady state stays quiet: only the connect line and the change line
+	// name a model list at INFO; routine probes are DEBUG.
+	named := 0
+	for _, l := range strings.Split(h.LogString(), "\n") {
+		if strings.Contains(l, "level=INFO") && strings.Contains(l, " models=") {
+			named++
+		}
+	}
+	if named != 2 {
+		t.Fatalf("want 2 INFO lines naming a model list, got %d:\n%s", named, h.LogString())
 	}
 }

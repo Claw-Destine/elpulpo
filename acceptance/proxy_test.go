@@ -663,6 +663,111 @@ func TestAcceptance_44_CorsAsymmetry(t *testing.T) {
 	}
 }
 
+// logLine returns the first captured line carrying the given slog message.
+func logLine(log, msg string) string {
+	want := `msg="` + msg + `"`
+	for _, l := range strings.Split(log, "\n") {
+		if strings.Contains(l, want) {
+			return l
+		}
+	}
+	return ""
+}
+
+// requestLines picks the proxy's per-request log lines out of everything the
+// harness captured.
+func requestLines(log string) []string {
+	var out []string
+	for _, l := range strings.Split(log, "\n") {
+		if strings.Contains(l, `msg="chat request"`) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TestProxyRequestLogLines: every request that reaches the proxy ends in
+// exactly one "chat request" line. Routed ones are INFO carrying the server,
+// the queue wait and the token counts; a rejection is WARN carrying a reason
+// and writes no usage row.
+func TestProxyRequestLogLines(t *testing.T) {
+	h := testutil.Start(t)
+	up := testutil.NewUpstream(t, "openai", "log-model")
+	h.ApplyConfig(&config.Config{Hosts: []config.Host{
+		{ID: "solo", HostAddresses: []string{"127.0.0.1"}, Servers: []config.Server{
+			{ID: "main", Port: up.Port(), API: "openai"},
+		}},
+	}})
+	h.WaitForModel("log-model-openai@solo")
+
+	chat := func(model string, stream bool) {
+		t.Helper()
+		payload := map[string]any{
+			"model":    model,
+			"messages": []any{map[string]string{"role": "user", "content": "hi"}},
+		}
+		if stream {
+			payload["stream"] = true
+			st, _, err := h.ChatStream("", payload, nil)
+			if st != 200 || err != "" {
+				t.Fatalf("stream: status %d err %q", st, err)
+			}
+			return
+		}
+		if st, body := h.Chat("", payload); st != 200 {
+			t.Fatalf("chat: status %d %s", st, body)
+		}
+	}
+
+	chat("log-model-openai@solo", false)
+	chat("log-model-openai@solo", true)
+	// Unknown model: 404, no usage row.
+	if st, _ := chatStatus(t, h, "nope-not-here"); st != 404 {
+		t.Fatalf("unknown model: status %d", st)
+	}
+	// Upstream failure: a real failure, so ERROR.
+	up.Status = 500
+	if st, _ := chatStatus(t, h, "log-model-openai@solo"); st != 502 {
+		t.Fatalf("upstream 500: status %d", st)
+	}
+
+	h.DrainWriter()
+	h.Eventually(3*time.Second, "exactly four chat request lines", func() bool {
+		return len(requestLines(h.LogString())) == 4
+	})
+	lines := requestLines(h.LogString())
+
+	// Routed requests: one line each, saying where it went and what it cost.
+	for i, want := range [][]string{
+		{"level=INFO", "host=solo", "server=main", "model=log-model-openai@solo",
+			"stream=false", "status=ok", "http_status=200", "wait_ms=", "tokens_in=", "estimated=false"},
+		{"level=INFO", "host=solo", "server=main", "stream=true",
+			"status=ok", "http_status=200", "ttft_ms="},
+		{"level=WARN", "reason=not_configured", "status=rejected", "http_status=404"},
+		{"level=ERROR", "host=solo", "server=main", "status=upstream_error",
+			"http_status=502", `err="upstream answered 500"`},
+	} {
+		for _, attr := range want {
+			if !strings.Contains(lines[i], attr) {
+				t.Fatalf("line %d lacks %q:\n%s", i+1, attr, lines[i])
+			}
+		}
+	}
+	// The rejection leaves no row; the three routed requests leave three.
+	if rows := h.Rows(); len(rows) != 3 {
+		t.Fatalf("routed requests must write 3 usage rows, got %d: %+v", len(rows), rows)
+	}
+}
+
+// chatStatus fires one chat request and reports only its status.
+func chatStatus(t *testing.T, h *testutil.Harness, model string) (int, string) {
+	t.Helper()
+	return h.Chat("", map[string]any{
+		"model":    model,
+		"messages": []any{map[string]string{"role": "user", "content": "hi"}},
+	})
+}
+
 func mustReq(method, url string, hdr map[string]string) *http.Request {
 	r, _ := http.NewRequest(method, url, nil)
 	for k, v := range hdr {
