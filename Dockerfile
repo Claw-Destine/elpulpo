@@ -8,11 +8,23 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/elpulpo ./cmd/elpulpo
 
+# Pre-created, service-owned homes for the two mount points. Docker
+# initialises a fresh named volume from the image directory, ownership
+# included, so with these in place uid 65534 can open its SQLite database
+# and save the YAML with no host-side chown. Without them the volume is
+# root-owned and startup dies on the first write. The .keep markers exist
+# because COPY does not carry empty directories.
+RUN mkdir -p /staging/etc/elpulpo /staging/var/lib/elpulpo \
+ && touch /staging/etc/elpulpo/.keep /staging/var/lib/elpulpo/.keep \
+ && chown -R 65534:65534 /staging
+
 # A shell-less image: CGO_ENABLED=0 makes it static, and the binary's
 # --health flag replaces the shell the usual healthcheck would need.
 FROM scratch
 COPY --from=build /out/elpulpo /elpulpo
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --chown=65534:65534 --from=build /staging/etc/elpulpo/ /etc/elpulpo/
+COPY --chown=65534:65534 --from=build /staging/var/lib/elpulpo/ /var/lib/elpulpo/
 
 ENV ELPULPO_ADDR=:8080 \
     ELPULPO_CONFIG=/etc/elpulpo/elpulpo.yaml \

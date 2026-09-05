@@ -54,7 +54,11 @@ type Repo struct {
 
 // Open prepares the database at path with WAL and runs migrations.
 func Open(path string) (*Repo, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := checkWritable(dir, path); err != nil {
 		return nil, err
 	}
 	dsn := "file:" + filepath.Clean(path) +
@@ -76,6 +80,32 @@ func Open(path string) (*Repo, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// checkWritable turns the opaque `unable to open database file (14)` SQLite
+// reports for permission problems into a message that names the real fix.
+// WAL mode creates the database plus -wal and -shm siblings, so it needs
+// write permission on the directory itself, not just on an existing file —
+// the classic tripwire for bind-mounted volumes owned by another uid.
+func checkWritable(dir, dbPath string) error {
+	probe, err := os.CreateTemp(dir, ".elpulpo-write-probe-*")
+	if err != nil {
+		return fmt.Errorf("data directory %s is not writable by uid %d (SQLite opens the database in WAL mode, which needs write permission on the directory; fix the mount ownership, e.g. chown -R %d %s): %w",
+			dir, os.Getuid(), os.Getuid(), dir, err)
+	}
+	probe.Close()
+	os.Remove(probe.Name())
+	// The directory is writable, but an existing database may be owned by
+	// someone else; SQLite reports that as the same code 14.
+	if _, err := os.Stat(dbPath); err == nil {
+		f, err := os.OpenFile(dbPath, os.O_RDWR, 0)
+		if err != nil {
+			return fmt.Errorf("database %s cannot be opened read-write by uid %d (chown it to that uid): %w",
+				dbPath, os.Getuid(), err)
+		}
+		f.Close()
+	}
+	return nil
 }
 
 // DB exposes the pool for shutdown checkpointing.

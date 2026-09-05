@@ -38,6 +38,20 @@ docker run -d --name elpulpo -p 8080:8080 \
 The image is shell-less (`scratch`); its healthcheck runs
 `/elpulpo --health`, which probes the process's own `/healthz`.
 
+The service runs as uid 65534 and must be able to write both mount points
+(SQLite in WAL mode writes into the *directory*). Docker initialises fresh
+named volumes from the image, which pre-creates `/etc/elpulpo` and
+`/var/lib/elpulpo` owned by that uid, so the volumes in the example above
+work out of the box. Two cases still need a host-side fix, and startup
+names whichever you hit:
+
+- **bind mounts** (`-v /opt/elpulpo/data:/var/lib/elpulpo`): Docker cannot
+  change host ownership, so run
+  `sudo chown -R 65534:65534 /opt/elpulpo` first;
+- **named volumes created by an older image**, which are root-owned — fix
+  once, e.g. with `docker run --rm -v elpulpo-data:/var/lib/elpulpo alpine
+  chown -R 65534:65534 /var/lib/elpulpo`.
+
 ## Configuration
 
 Everything lives in one YAML file (`ELPULPO_CONFIG`). The dashboard edits

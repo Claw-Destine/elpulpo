@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -213,5 +214,54 @@ func TestPrune(t *testing.T) {
 	rest, _ := r.Rows(context.Background(), usage.Filter{}, "timestamp", false, 10, 0)
 	if len(rest) != 1 {
 		t.Fatalf("kept %d rows", len(rest))
+	}
+}
+
+// The classic deployment failure: the data directory is owned by another
+// uid (a bind mount root created it). Open must name the fix, not just
+// echo SQLite's opaque `unable to open database file (14)`.
+func TestOpenReportsUnwritableDataDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "mnt")
+	if err := os.Mkdir(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) }) // let TempDir cleanup through
+
+	_, err := usage.Open(filepath.Join(dir, "usage.db"))
+	if err == nil {
+		t.Fatal("expected failure on an unwritable data directory")
+	}
+	if !strings.Contains(err.Error(), "is not writable by uid") ||
+		!strings.Contains(err.Error(), dir) ||
+		strings.Contains(err.Error(), "(14)") {
+		t.Fatalf("unhelpful error: %v", err)
+	}
+}
+
+// Same diagnosis when the directory is fine but an existing database is
+// not readable/writable by us.
+func TestOpenReportsUnwritableDatabaseFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	path := filepath.Join(t.TempDir(), "usage.db")
+	r, err := usage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	_, err = usage.Open(path)
+	if err == nil {
+		t.Fatal("expected failure on a database we cannot write")
+	}
+	if !strings.Contains(err.Error(), "cannot be opened read-write") ||
+		strings.Contains(err.Error(), "(14)") {
+		t.Fatalf("unhelpful error: %v", err)
 	}
 }
