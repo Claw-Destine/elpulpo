@@ -254,9 +254,18 @@ stated expectation.
   state ever changes on a `GET` (scenario 41).
 - Credentials compared with `crypto/subtle.ConstantTimeCompare`; tokens and `auth_token` values never
   reach the logs.
-- The Servers screen refreshes by htmx polling every 5s, the stats table on the same mechanism. No
-  websocket: one connection model is worth more than the latency saved, and nobody leaves this
-  dashboard open for hours.
+- Each screen is a stack of independently refreshing regions, and **every fragment renders its own
+  polling container**: the swap is `outerHTML`, so a region that fetched a bare child would lose its
+  `hx-get`/`hx-trigger` on the first refresh and stop refreshing. The Servers screen is
+  `#servers-state` (the table) → `#servers-models` (published ids, from the route table the proxy
+  routes with) → `#servers-config` (the forms and the YAML panel); the first two poll every 5s and
+  the forms re-read after any mutation, which also re-seats the config hash the next save is guarded
+  with. `GET /dashboard/part/servers` serves them by `?scope=`.
+- A mutation answers `HX-Trigger: elpulpo-changed`. htmx dispatches it on the submitting form and the
+  event bubbles, so the regions listen `elpulpo-changed from:body` — that is what reloads the table
+  and the model list the moment a host, a server or an import is applied, in every open tab. The
+  stats table polls on the same 5s mechanism. No websocket: one connection model is worth more than
+  the latency saved, and nobody leaves this dashboard open for hours.
 
 ## Runtime and deployment
 

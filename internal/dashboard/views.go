@@ -46,6 +46,7 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, c templ.Compone
 
 type ServersView struct {
 	States []health.StateView
+	Models []health.ModelView
 	Hosts  []FormHost
 	Hash   string
 }
@@ -65,11 +66,12 @@ type FormServer struct {
 
 func (h *Handler) serversView() ServersView {
 	snap := h.d.Store.Current()
+	states := h.d.Mgr.States()
 	seen := map[string][]string{}
-	for _, st := range h.d.Mgr.States() {
+	for _, st := range states {
 		seen[st.HostID+"\x00"+st.ServerID] = st.Models
 	}
-	v := ServersView{States: h.d.Mgr.States(), Hash: snap.FileHash}
+	v := ServersView{States: states, Models: h.d.Mgr.Models(), Hash: snap.FileHash}
 	for _, host := range snap.Config.Hosts {
 		fh := FormHost{ID: host.ID, Description: host.Description, Addresses: strings.Join(host.HostAddresses, "\n")}
 		for _, srv := range host.Servers {
@@ -85,6 +87,9 @@ func (h *Handler) serversView() ServersView {
 	if v.States == nil {
 		v.States = []health.StateView{}
 	}
+	if v.Models == nil {
+		v.Models = []health.ModelView{}
+	}
 	return v
 }
 
@@ -94,11 +99,14 @@ func (h *Handler) pageServers(w http.ResponseWriter, r *http.Request, csrf strin
 
 func (h *Handler) partServers(w http.ResponseWriter, r *http.Request, csrf string) {
 	v := h.serversView()
-	if r.URL.Query().Get("scope") == "forms" {
+	switch r.URL.Query().Get("scope") {
+	case "forms":
 		h.render(w, r, ServersFormsFragment(v))
-		return
+	case "models":
+		h.render(w, r, ServersModelsFragment(v.Models))
+	default:
+		h.render(w, r, ServersStateFragment(v.States))
 	}
-	h.render(w, r, ServersStateFragment(v.States))
 }
 
 // --- prices --------------------------------------------------------------------

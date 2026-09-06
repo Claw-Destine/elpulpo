@@ -1,4 +1,4 @@
-# El Pulpo
+# 🐙 El Pulpo
 
 El Pulpo is a proxy for self-hosted LLM inference. It sits between your
 clients and your own inference boxes and does two jobs:
@@ -191,10 +191,16 @@ not a record of other people's typos.
 
 ## The dashboard
 
-- **Servers** — host/server cards with up/down, the active address
-  (flagged when it is a fallback), model counts, in-flight requests, last
-  error; add/edit/delete, YAML export, import with an added/removed/
-  changed preview.
+- **Servers** — three regions, each refreshing on its own. A state table
+  with up/down, the active address (flagged when it is a fallback), model
+  counts, in-flight requests and last error; under it **Available models**,
+  every published id the fleet knows with its base model, host, server and
+  the upstream serving it — the `available` ids are exactly what
+  `GET /v1/models` answers, and a name whose server is dark stays listed as
+  `withdrawn`; under that **Configure servers** — add/edit/delete, YAML
+  export, import with an added/removed/changed preview. A mutation reloads
+  the table and the model list immediately; probe results (a server
+  flipping, a model loaded or unloaded upstream) land on the 5-second poll.
 - **Prices** — the document's price entries, base model names seen in
   usage that carry no price, and the read-only catalogue (~24 cloud
   models, embedded in the binary, `as_of`-labelled, stale after 180

@@ -632,3 +632,69 @@ func (m *Manager) States() []StateView {
 	})
 	return out
 }
+
+// ModelView is one published id as the dashboard's model list shows it:
+// what clients address, what the upstream sees, and whether the route table
+// answers for it right now.
+type ModelView struct {
+	Published string `json:"published"`
+	Base      string `json:"base"`
+	HostID    string `json:"host"`
+	ServerID  string `json:"server"`
+	API       string `json:"api"`
+	Upstream  string `json:"upstream"` // scheme://address:port requests go to, "" when withdrawn
+	Routable  bool   `json:"routable"` // the id is in the route table: /v1 answers it
+}
+
+// Models lists every published id the fleet is known to publish. The route
+// table's ids — exactly what GET /v1/models answers — come first; the ids of
+// servers that are down or have no live address follow as withdrawn, so the
+// dashboard explains a 404 not_available instead of hiding the name. Ordered
+// by published id within each group.
+func (m *Manager) Models() []ModelView {
+	t := m.table.Load()
+	out := make([]ModelView, 0, len(t.routes))
+	seen := make(map[string]bool, len(t.routes))
+	for _, id := range t.ids {
+		tg := t.routes[id]
+		_, _, active, _, _, _, _, cfg := tg.State.snapshot()
+		out = append(out, ModelView{
+			Published: id, Base: tg.Base, HostID: tg.HostID, ServerID: tg.ServerID,
+			API: cfg.API, Upstream: endpoint(cfg, active), Routable: true,
+		})
+		seen[id] = true
+	}
+
+	m.mu.Lock()
+	entries := make([]*ServerState, 0, len(m.servers))
+	for _, e := range m.servers {
+		entries = append(entries, e.state)
+	}
+	m.mu.Unlock()
+	var withdrawn []ModelView
+	for _, st := range entries {
+		_, _, _, _, _, models, _, cfg := st.snapshot()
+		seg := cfg.NameSegment()
+		for _, mod := range models {
+			pub := config.PublishID(mod, seg, st.HostID)
+			if seen[pub] {
+				continue // routable already, or an earlier server published it
+			}
+			seen[pub] = true
+			// No upstream: nothing routes this id while its server is dark.
+			withdrawn = append(withdrawn, ModelView{
+				Published: pub, Base: mod, HostID: st.HostID, ServerID: st.ServerID, API: cfg.API,
+			})
+		}
+	}
+	sort.Slice(withdrawn, func(i, j int) bool { return withdrawn[i].Published < withdrawn[j].Published })
+	return append(out, withdrawn...)
+}
+
+// endpoint names the upstream address requests for a model go to.
+func endpoint(cfg config.Server, addr string) string {
+	if addr == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s://%s:%d", cfg.SchemeOrDefault(), addr, cfg.Port)
+}

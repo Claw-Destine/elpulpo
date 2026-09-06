@@ -12,227 +12,311 @@ templ ServersPage(d *Deps, csrf string, v ServersView) {
 	@Layout("Servers", "servers", csrf, d, func() templ.Component { return ServersMain(v) })
 }
 
+// ServersMain stacks the three regions that refresh on their own: the server
+// table, the list of published models and the configuration forms. Each
+// fragment renders its own polling container, so an outerHTML swap restores
+// the container along with its content (the pattern the other pages use).
 templ ServersMain(v ServersView) {
 	<h1>Servers</h1>
-	<div id="servers-state" hx-get="/dashboard/part/servers" hx-trigger="every 5s, elpulpo-changed from:body" hx-swap="outerHTML">
-		@ServersStateFragment(v.States)
-	</div>
-	<div id="servers-config" hx-get="/dashboard/part/servers?scope=forms" hx-trigger="elpulpo-changed from:body" hx-swap="outerHTML">
-		@ServersFormsFragment(v)
-	</div>
+	@ServersStateFragment(v.States)
+	@ServersModelsFragment(v.Models)
+	@ServersFormsFragment(v)
 }
 
+// ServersStateFragment is the per-server state table: htmx re-reads it every
+// 5 s and immediately after any mutation, so a probe that flipped a server or
+// moved its model list shows up without a reload.
 templ ServersStateFragment(states []health.StateView) {
-	<table class="grid">
-		<thead>
-			<tr>
-				<th>Host</th>
-				<th>Server</th>
-				<th>API</th>
-				<th>Port</th>
-				<th>State</th>
-				<th>Active address</th>
-				<th class="num">Models</th>
-				<th class="num">In flight</th>
-				<th class="num">Max conc.</th>
-				<th>Last probe</th>
-				<th>Last error</th>
-			</tr>
-		</thead>
-		<tbody>
-			if len(states) == 0 {
+	<div id="servers-state" hx-get="/dashboard/part/servers" hx-trigger="every 5s, elpulpo-changed from:body" hx-swap="outerHTML">
+		<table class="grid">
+			<thead>
 				<tr>
-					<td colspan="11" class="muted">No servers configured yet — add a host below.</td>
+					<th>Host</th>
+					<th>Server</th>
+					<th>API</th>
+					<th>Port</th>
+					<th>State</th>
+					<th>Active address</th>
+					<th class="num">Models</th>
+					<th class="num">In flight</th>
+					<th class="num">Max conc.</th>
+					<th>Last probe</th>
+					<th>Last error</th>
 				</tr>
-			}
-			for _, s := range states {
-				<tr>
-					<td>{ s.HostID }</td>
-					<td>{ s.ServerID }</td>
-					<td class="mono">{ s.API }</td>
-					<td class="num">{ fmtI(int64(s.Port)) }</td>
-					<td>
-						if s.Up {
-							<span class="up">up</span>
-						} else {
-							<span class="down">down</span>
-							if s.ConsecFails > 0 {
-								<span class="muted"> { fmtI(int64(s.ConsecFails)) } fail(s)</span>
+			</thead>
+			<tbody>
+				if len(states) == 0 {
+					<tr>
+						<td colspan="11" class="muted">No servers configured yet — add a host below.</td>
+					</tr>
+				}
+				for _, s := range states {
+					<tr>
+						<td>{ s.HostID }</td>
+						<td>{ s.ServerID }</td>
+						<td class="mono">{ s.API }</td>
+						<td class="num">{ fmtI(int64(s.Port)) }</td>
+						<td>
+							if s.Up {
+								<span class="up">up</span>
+							} else {
+								<span class="down">down</span>
+								if s.ConsecFails > 0 {
+									<span class="muted"> { fmtI(int64(s.ConsecFails)) } fail(s)</span>
+								}
 							}
-						}
-					</td>
-					<td class="mono">
-						if s.ActiveAddr != "" {
-							{ s.ActiveAddr }
-							if s.Fallback {
-								<span class="flag">fallback</span>
+						</td>
+						<td class="mono">
+							if s.ActiveAddr != "" {
+								{ s.ActiveAddr }
+								if s.Fallback {
+									<span class="flag">fallback</span>
+								}
+							} else {
+								<span class="muted">—</span>
 							}
-						} else {
-							<span class="muted">—</span>
-						}
-					</td>
-					<td class="num" title={ joinComma(s.Published) }>{ fmtI(int64(s.ModelCount)) }</td>
-					<td class="num">{ fmtI(s.InFlight) }</td>
-					<td class="num">
-						if s.MaxConcurrency > 0 {
-							{ fmtI(int64(s.MaxConcurrency)) }
-						} else {
-							<span class="muted">∞</span>
-						}
-					</td>
-					<td class="nowrap">{ fmtClock(s.LastProbe) }</td>
-					<td class="err">{ s.LastError }</td>
-				</tr>
-			}
-		</tbody>
-	</table>
+						</td>
+						<td class="num" title={ joinComma(s.Published) }>{ fmtI(int64(s.ModelCount)) }</td>
+						<td class="num">{ fmtI(s.InFlight) }</td>
+						<td class="num">
+							if s.MaxConcurrency > 0 {
+								{ fmtI(int64(s.MaxConcurrency)) }
+							} else {
+								<span class="muted">∞</span>
+							}
+						</td>
+						<td class="nowrap">{ fmtClock(s.LastProbe) }</td>
+						<td class="err">{ s.LastError }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
 }
 
-templ ServersFormsFragment(v ServersView) {
-	<h2>Hosts &amp; servers</h2>
-	<div id="servers-msg" class="msg" aria-live="polite"></div>
-	if len(v.Hosts) == 0 {
-		<p class="muted">No hosts yet — the configuration is empty. Add the first one below.</p>
-	}
-	for _, host := range v.Hosts {
-		<details class="host">
-			<summary>
-				{ host.ID }
-				if host.Description != "" {
-					<span class="muted"> — { host.Description }</span>
+// ServersModelsFragment lists the published ids clients may address: the
+// route table's ids (exactly what GET /v1/models answers) plus the names the
+// fleet still knows but cannot route. It refreshes on the same clock as the
+// state table, so a model loaded or unloaded upstream appears on its own.
+templ ServersModelsFragment(models []health.ModelView) {
+	<div id="servers-models" hx-get="/dashboard/part/servers?scope=models" hx-trigger="every 5s, elpulpo-changed from:body" hx-swap="outerHTML">
+		<h2>Available models</h2>
+		<p class="hint">
+			Every published id the fleet knows; the ones listed as available are exactly what
+			<code>GET /v1/models</code> answers today.
+			if countWithdrawn(models) > 0 {
+				<span class="down"> { fmtI(int64(countWithdrawn(models))) } withdrawn</span><span class="muted">: a withdrawn name exists but answers 404 not_available until its server is back.</span>
+			}
+		</p>
+		<table class="grid">
+			<thead>
+				<tr>
+					<th>Published model</th>
+					<th>Base model</th>
+					<th>Host</th>
+					<th>Server</th>
+					<th>API</th>
+					<th>Routed to</th>
+					<th>Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				if len(models) == 0 {
+					<tr>
+						<td colspan="7" class="muted">No models published yet — every server reports its models on its first probe.</td>
+					</tr>
 				}
-			</summary>
-			<form hx-post="/dashboard/action/host/save" hx-target="#servers-msg">
-				<input type="hidden" name="h" value={ v.Hash }/>
-				<input type="hidden" name="original_id" value={ host.ID }/>
-				<label>
-					Host ID
-					<input name="id" value={ host.ID }/>
-				</label>
-				<label>
-					Description
-					<input name="description" value={ host.Description }/>
-				</label>
-				<label>
-					Addresses — one per line, preference order (position 0 first)
-					<textarea name="addresses" rows="3">{ host.Addresses }</textarea>
-				</label>
-				<button type="submit">Save host</button>
-			</form>
-			for _, srv := range host.Servers {
+				for _, mdl := range models {
+					<tr>
+						<td class="mono">{ mdl.Published }</td>
+						<td class="mono">{ mdl.Base }</td>
+						<td>{ mdl.HostID }</td>
+						<td>{ mdl.ServerID }</td>
+						<td class="mono">{ mdl.API }</td>
+						<td class="mono">
+							if mdl.Upstream != "" {
+								{ mdl.Upstream }
+							} else {
+								<span class="muted">—</span>
+							}
+						</td>
+						<td>
+							if mdl.Routable {
+								<span class="up">available</span>
+							} else {
+								<span class="down">withdrawn</span>
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+// ServersFormsFragment is the editor: hosts, servers and the YAML panel. It
+// re-reads itself after every mutation, which both shows what was just
+// added or removed and re-seats the config hash the next save is guarded
+// with.
+templ ServersFormsFragment(v ServersView) {
+	<div id="servers-config" hx-get="/dashboard/part/servers?scope=forms" hx-trigger="elpulpo-changed from:body" hx-swap="outerHTML">
+		<h2>Configure servers</h2>
+		<div id="servers-msg" class="msg" aria-live="polite"></div>
+		if len(v.Hosts) == 0 {
+			<p class="muted">No hosts yet — the configuration is empty. Add the first one below.</p>
+		}
+		for _, host := range v.Hosts {
+			<details class="host">
+				<summary>
+					{ host.ID }
+					if host.Description != "" {
+						<span class="muted"> — { host.Description }</span>
+					}
+				</summary>
+				<form hx-post="/dashboard/action/host/save" hx-target="#servers-msg">
+					<input type="hidden" name="h" value={ v.Hash }/>
+					<input type="hidden" name="original_id" value={ host.ID }/>
+					<label>
+						Host ID
+						<input name="id" value={ host.ID }/>
+					</label>
+					<label>
+						Description
+						<input name="description" value={ host.Description }/>
+					</label>
+					<label>
+						Addresses — one per line, preference order (position 0 first)
+						<textarea name="addresses" rows="3">{ host.Addresses }</textarea>
+					</label>
+					<button type="submit">Save host</button>
+				</form>
+				for _, srv := range host.Servers {
+					<details class="server">
+						<summary>
+							<span class="mono">{ srv.ID } · { srv.Scheme }:{ fmtI(int64(srv.Port)) } · { srv.API }</span>
+							if len(srv.Models) > 0 {
+								<span class="muted"> — { fmtI(int64(len(srv.Models))) } models</span>
+							}
+						</summary>
+						<form hx-post="/dashboard/action/server/save" hx-target="#servers-msg">
+							<input type="hidden" name="h" value={ v.Hash }/>
+							<input type="hidden" name="host_id" value={ host.ID }/>
+							<input type="hidden" name="original_id" value={ srv.ID }/>
+							<label>Server ID<input name="id" value={ srv.ID }/></label>
+							<label>
+								API adapter
+								<select name="api">
+									<option value="ollama" selected={ srv.API == "ollama" }>ollama</option>
+									<option value="openai" selected={ srv.API == "openai" }>openai</option>
+								</select>
+							</label>
+							<label>Port<input name="port" value={ fmtI(int64(srv.Port)) }/></label>
+							<label>
+								Scheme
+								<select name="scheme">
+									<option value="http" selected={ srv.Scheme == "http" }>http</option>
+									<option value="https" selected={ srv.Scheme == "https" }>https</option>
+								</select>
+							</label>
+							<label>Name segment postfix (empty = api)<input name="postfix" value={ srv.Postfix }/></label>
+							<label>Description<input name="description" value={ srv.Description }/></label>
+							<label>Auth token (sent upstream as Bearer)<input name="auth_token" value={ srv.AuthToken }/></label>
+							<label>Max concurrency (0 = unlimited)<input name="max_concurrency" value={ fmtI(int64(srv.MaxConcurrency)) }/></label>
+							<button type="submit">Save server</button>
+						</form>
+						<form hx-post="/dashboard/action/server/delete" hx-target="#servers-msg" hx-confirm="Delete this server from this host?">
+							<input type="hidden" name="h" value={ v.Hash }/>
+							<input type="hidden" name="host_id" value={ host.ID }/>
+							<input type="hidden" name="id" value={ srv.ID }/>
+							<button type="submit" class="danger">Delete server</button>
+						</form>
+					</details>
+				}
 				<details class="server">
-					<summary>
-						<span class="mono">{ srv.ID } · { srv.Scheme }:{ fmtI(int64(srv.Port)) } · { srv.API }</span>
-						if len(srv.Models) > 0 {
-							<span class="muted"> — { fmtI(int64(len(srv.Models))) } models</span>
-						}
-					</summary>
+					<summary>Add server to { host.ID }</summary>
 					<form hx-post="/dashboard/action/server/save" hx-target="#servers-msg">
 						<input type="hidden" name="h" value={ v.Hash }/>
 						<input type="hidden" name="host_id" value={ host.ID }/>
-						<input type="hidden" name="original_id" value={ srv.ID }/>
-						<label>Server ID<input name="id" value={ srv.ID }/></label>
+						<label>Server ID<input name="id" placeholder="ollama"/></label>
 						<label>
 							API adapter
 							<select name="api">
-								<option value="ollama" selected={ srv.API == "ollama" }>ollama</option>
-								<option value="openai" selected={ srv.API == "openai" }>openai</option>
+								<option value="ollama" selected={ true }>ollama</option>
+								<option value="openai" selected={ false }>openai</option>
 							</select>
 						</label>
-						<label>Port<input name="port" value={ fmtI(int64(srv.Port)) }/></label>
+						<label>Port<input name="port" placeholder="11434"/></label>
 						<label>
 							Scheme
 							<select name="scheme">
-								<option value="http" selected={ srv.Scheme == "http" }>http</option>
-								<option value="https" selected={ srv.Scheme == "https" }>https</option>
+								<option value="http" selected={ true }>http</option>
+								<option value="https" selected={ false }>https</option>
 							</select>
 						</label>
-						<label>Name segment postfix (empty = api)<input name="postfix" value={ srv.Postfix }/></label>
-						<label>Description<input name="description" value={ srv.Description }/></label>
-						<label>Auth token (sent upstream as Bearer)<input name="auth_token" value={ srv.AuthToken }/></label>
-						<label>Max concurrency (0 = unlimited)<input name="max_concurrency" value={ fmtI(int64(srv.MaxConcurrency)) }/></label>
-						<button type="submit">Save server</button>
-					</form>
-					<form hx-post="/dashboard/action/server/delete" hx-target="#servers-msg" hx-confirm="Delete this server from this host?">
-						<input type="hidden" name="h" value={ v.Hash }/>
-						<input type="hidden" name="host_id" value={ host.ID }/>
-						<input type="hidden" name="id" value={ srv.ID }/>
-						<button type="submit" class="danger">Delete server</button>
+						<label>Name segment postfix (empty = api)<input name="postfix"/></label>
+						<label>Description<input name="description"/></label>
+						<label>Auth token (sent upstream as Bearer)<input name="auth_token"/></label>
+						<label>Max concurrency (0 = unlimited)<input name="max_concurrency" value="0"/></label>
+						<button type="submit">Add server</button>
 					</form>
 				</details>
-			}
-			<details class="server">
-				<summary>Add server to { host.ID }</summary>
-				<form hx-post="/dashboard/action/server/save" hx-target="#servers-msg">
+				<form hx-post="/dashboard/action/host/delete" hx-target="#servers-msg" hx-confirm="Delete this host and all its servers?">
 					<input type="hidden" name="h" value={ v.Hash }/>
-					<input type="hidden" name="host_id" value={ host.ID }/>
-					<label>Server ID<input name="id" placeholder="ollama"/></label>
-					<label>
-						API adapter
-						<select name="api">
-							<option value="ollama" selected={ true }>ollama</option>
-							<option value="openai" selected={ false }>openai</option>
-						</select>
-					</label>
-					<label>Port<input name="port" placeholder="11434"/></label>
-					<label>
-						Scheme
-						<select name="scheme">
-							<option value="http" selected={ true }>http</option>
-							<option value="https" selected={ false }>https</option>
-						</select>
-					</label>
-					<label>Name segment postfix (empty = api)<input name="postfix"/></label>
-					<label>Description<input name="description"/></label>
-					<label>Auth token (sent upstream as Bearer)<input name="auth_token"/></label>
-					<label>Max concurrency (0 = unlimited)<input name="max_concurrency" value="0"/></label>
-					<button type="submit">Add server</button>
+					<input type="hidden" name="id" value={ host.ID }/>
+					<button type="submit" class="danger">Delete host</button>
 				</form>
 			</details>
-			<form hx-post="/dashboard/action/host/delete" hx-target="#servers-msg" hx-confirm="Delete this host and all its servers?">
+		}
+		<details class="host">
+			<summary>Add host</summary>
+			<form hx-post="/dashboard/action/host/save" hx-target="#servers-msg">
 				<input type="hidden" name="h" value={ v.Hash }/>
-				<input type="hidden" name="id" value={ host.ID }/>
-				<button type="submit" class="danger">Delete host</button>
+				<label>Host ID<input name="id" placeholder="minion1"/></label>
+				<label>Description<input name="description" placeholder="Rack box 1"/></label>
+				<label>
+					Addresses — one per line, preference order
+					<textarea name="addresses" rows="2" placeholder="192.168.1.101"></textarea>
+				</label>
+				<button type="submit">Add host</button>
 			</form>
 		</details>
-	}
-	<details class="host">
-		<summary>Add host</summary>
-		<form hx-post="/dashboard/action/host/save" hx-target="#servers-msg">
-			<input type="hidden" name="h" value={ v.Hash }/>
-			<label>Host ID<input name="id" placeholder="minion1"/></label>
-			<label>Description<input name="description" placeholder="Rack box 1"/></label>
-			<label>
-				Addresses — one per line, preference order
-				<textarea name="addresses" rows="2" placeholder="192.168.1.101"></textarea>
-			</label>
-			<button type="submit">Add host</button>
-		</form>
-	</details>
 
-	<h2>YAML export &amp; import</h2>
-	<div class="exports">
-		<a class="mono" href="/dashboard/export/config.yaml">Download config.yaml</a>
-	</div>
-	<div class="panel">
-		<p class="hint">
-			Import replaces the whole configuration (no merge) after validating every rule.
-			Validate first to see the added/removed/changed preview, then confirm apply.
-			A save refuses with 409 if the file changed on disk since this page was rendered.
-		</p>
-		<form>
-			<input type="hidden" name="h" value={ v.Hash }/>
-			<textarea name="yaml" rows="10" spellcheck="false" placeholder="hosts:"></textarea>
-			<button type="submit" class="secondary" hx-post="/dashboard/action/config/import" hx-target="#import-msg">Validate &amp; preview</button>
-			<button type="submit" class="danger" hx-post="/dashboard/action/config/import/apply" hx-target="#import-msg" hx-confirm="Apply this import? It replaces the whole configuration.">Confirm apply</button>
-		</form>
-		<div id="import-msg" class="msg"></div>
+		<h2>YAML export &amp; import</h2>
+		<div class="exports">
+			<a class="mono" href="/dashboard/export/config.yaml">Download config.yaml</a>
+		</div>
+		<div class="panel">
+			<p class="hint">
+				Import replaces the whole configuration (no merge) after validating every rule.
+				Validate first to see the added/removed/changed preview, then confirm apply.
+				A save refuses with 409 if the file changed on disk since this page was rendered.
+			</p>
+			<form>
+				<input type="hidden" name="h" value={ v.Hash }/>
+				<textarea name="yaml" rows="10" spellcheck="false" placeholder="hosts:"></textarea>
+				<button type="submit" class="secondary" hx-post="/dashboard/action/config/import" hx-target="#import-msg">Validate &amp; preview</button>
+				<button type="submit" class="danger" hx-post="/dashboard/action/config/import/apply" hx-target="#import-msg" hx-confirm="Apply this import? It replaces the whole configuration.">Confirm apply</button>
+			</form>
+			<div id="import-msg" class="msg"></div>
+		</div>
 	</div>
 }
+
+// --- helpers ------------------------------------------------------------------
 
 func joinComma(vs []string) string {
 	if vs == nil {
 		return ""
 	}
 	return strings.Join(vs, ", ")
+}
+
+func countWithdrawn(ms []health.ModelView) int {
+	n := 0
+	for _, m := range ms {
+		if !m.Routable {
+			n++
+		}
+	}
+	return n
 }

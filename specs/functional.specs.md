@@ -473,10 +473,16 @@ stamp and the `stale` label exist so nobody forgets that.
 
 v1 screens, all acting on the live configuration without a restart:
 
-- **Servers** — hosts and servers with state, the `active_address` (flagged when it is a fallback
-  rather than the first configured address), model count, in-flight requests, last probe and last
-  error; add / edit / delete forms, including the ordered `host_addresses` list; validation errors
-  reported per field; YAML export download and import upload with the added/removed/changed preview.
+- **Servers** — three regions over the live configuration, each refreshing on its own. A state table:
+  hosts and servers with state, the `active_address` (flagged when it is a fallback rather than the
+  first configured address), model count, in-flight requests, last probe and last error. Below it
+  **Available models**: every published id the fleet knows with its base model, host, server, API and
+  the upstream serving it — the ids listed as `available` are exactly what `GET /v1/models` answers,
+  and a name whose server is dark stays listed as `withdrawn` instead of vanishing. Below that
+  **Configure servers**: add / edit / delete forms, including the ordered `host_addresses` list;
+  validation errors reported per field; YAML export download and import upload with the
+  added/removed/changed preview. Any accepted mutation reloads the table and the model list in every
+  open tab; a probe that changed a state or a model list is reflected on the next poll.
 - **Prices** — the `prices` section of the same configuration: currency, entries per base model name
   with their aliases, the model names seen in usage that match no entry, and the bundled
   [price catalogue](#price-catalogue) offered against those names.
@@ -538,6 +544,8 @@ used throughout.
 | 44 | browser preflight and call to `/v1/models` from another origin; same against `/dashboard` | `/v1` answers the preflight and the response carries `Access-Control-Allow-Origin: *`; `/dashboard` carries no CORS headers |
 | 45 | config containing only `hosts`, no `prices` section | it saves and applies, savings read as disabled, and the export contains no `prices` key |
 | 46 | `health_interval: 1s`, or `max_request_size: 2GiB` | rejected with a field-level error naming the allowed range; the live values are unchanged |
+| 47 | a server removed, a host with a server added, and a YAML import applied — all through the dashboard | each mutation answers `HX-Trigger: elpulpo-changed` so the open Servers tab reloads its regions; the state table and the model list follow without a reload: the removed id is gone from both, the added id appears in both, and the imported-away host disappears from both |
+| 48 | the Servers screen is open, an upstream unloads one of its models and then stops answering altogether | within one interval the unloaded id is off the model list and out of the model count, and while the server is dark its remaining id stays on the list flagged `withdrawn` — the screen names the `404 not_available` instead of denying the model exists |
 
 ## Out of scope (v1)
 
