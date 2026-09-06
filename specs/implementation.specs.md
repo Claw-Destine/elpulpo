@@ -343,6 +343,7 @@ reference including what a dashboard save does to hand-written comments, and how
 - **Dashboard deviations from the original build contract (all additive)**: `config/import/apply`
   also accepts `{"yaml","h"}` (re-posting the textarea) beside the staged `import_id` flow, because
   the CSP forbids the inline JS that would move an id from preview to confirm; `prices/save` also
-  accepts flat form fields beside `{"prices":…|null}`; `config/save` also takes a `yaml` form
-  field; mutations answer an `HX-Trigger` header for htmx refresh. CSRF, hash-guard, violation and
-  stale-save outcomes are exactly as contracted.
+  accepts flat form fields beside `{"prices":…|null}` — one repeated field per column, **one value
+  per table row**, zipped by position, so every row on screen is saved, never only the first;
+  `config/save` also takes a `yaml` form field; mutations answer an `HX-Trigger` header for htmx
+  refresh. CSRF, hash-guard, violation and stale-save outcomes are exactly as contracted.

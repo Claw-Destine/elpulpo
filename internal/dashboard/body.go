@@ -15,7 +15,9 @@ import (
 // bodyFields normalises an action body — application/json or form-encoded —
 // into one flat map of raw field values. JSON values are kept as their raw
 // JSON text (objects and arrays intact), so a form field carrying JSON and a
-// JSON body field look identical to the actions.
+// JSON body field look identical to the actions. A form field the browser
+// repeats (the rows of a table form) is likewise kept as a JSON array, never
+// reduced to its first value.
 func bodyFields(r *http.Request) (map[string]string, error) {
 	fields := map[string]string{}
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
@@ -32,8 +34,22 @@ func bodyFields(r *http.Request) (map[string]string, error) {
 		return nil, err
 	}
 	for k, vals := range r.PostForm {
-		if len(vals) > 0 {
+		switch len(vals) {
+		case 0:
+			continue
+		case 1:
 			fields[k] = vals[0]
+		default:
+			// A repeated form field — the rows of a table form — keeps every
+			// value, in submitted order, as JSON array text: the shape
+			// fieldAll already reads out of a JSON body, so both encodings
+			// look the same to the actions. Collapsing these to the first
+			// value would silently drop every row but the first.
+			b, err := json.Marshal(vals)
+			if err != nil {
+				return nil, err
+			}
+			fields[k] = string(b)
 		}
 	}
 	return fields, nil

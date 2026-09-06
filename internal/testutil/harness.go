@@ -193,6 +193,21 @@ func (h *Harness) CSRFPost(path string, v any) (int, string) {
 	}, bytes.NewReader(b))
 }
 
+// CSRFPostForm is the mutation the browser actually makes: an
+// x-www-form-urlencoded body (repeated keys for the rows of a table form)
+// with the CSRF cookie and header.
+func (h *Harness) CSRFPostForm(path string, vals url.Values) (int, string) {
+	h.T.Helper()
+	tok := h.CsrfC
+	if tok == "" {
+		tok = h.IssueCSRF()
+	}
+	return h.Do(http.MethodPost, path, map[string]string{
+		"Content-Type": "application/x-www-form-urlencoded",
+		"X-Csrf-Token": tok,
+	}, strings.NewReader(vals.Encode()))
+}
+
 // ApplyConfig writes a configuration through the live store (dashboard save
 // path), bypassing HTTP — preconditions in most scenarios use this;
 // scenarios that test the dashboard itself call SaveConfigHTTP.

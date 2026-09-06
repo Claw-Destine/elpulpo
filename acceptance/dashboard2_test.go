@@ -8,6 +8,7 @@ package acceptance_test
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -627,5 +628,145 @@ func TestAcceptance_46_SettingsRangesViaDashboard(t *testing.T) {
 	}
 	if got := dashSettings(t, h)["health_interval"]; got != float64(10*time.Second) {
 		t.Fatalf("/api/settings health_interval = %v, want 10s", got)
+	}
+}
+
+// --- Prices screen editor (form encoding) ---------------------------------
+
+// dashPriceFormRow is one row of the Prices table as the browser submits it.
+type dashPriceFormRow struct {
+	model, aliases, in, out, cached, reasoning string
+}
+
+// dashPricesForm builds the x-www-form-urlencoded body htmx posts from the
+// Prices table: each column is one repeated field, zipped by row position,
+// plus the blank "(add entry)" row that always trails the table and — for a
+// Delete click — the delete_model param of the button that was pressed.
+func dashPricesForm(t *testing.T, h *testutil.Harness, currency, deleteModel string,
+	rows ...dashPriceFormRow) url.Values {
+	t.Helper()
+	v := url.Values{"h": {dashHash(t, h)}, "currency": {currency}}
+	add := func(m, a, i, o, c, r string) {
+		v.Add("model", m)
+		v.Add("aliases", a)
+		v.Add("input", i)
+		v.Add("output", o)
+		v.Add("cached_input", c)
+		v.Add("reasoning_output", r)
+	}
+	for _, r := range rows {
+		add(r.model, r.aliases, r.in, r.out, r.cached, r.reasoning)
+	}
+	add("", "", "", "", "", "") // the trailing (add entry) row
+	if deleteModel != "" {
+		v.Set("delete_model", deleteModel)
+	}
+	return v
+}
+
+// dashExportedPrices reads the prices section back from the canonical export.
+func dashExportedPrices(t *testing.T, h *testutil.Harness) *config.Prices {
+	t.Helper()
+	var doc struct {
+		Prices *config.Prices `yaml:"prices"`
+	}
+	if err := yaml.Unmarshal([]byte(h.ConfigYAML()), &doc); err != nil {
+		t.Fatalf("export is not parseable: %v", err)
+	}
+	return doc.Prices
+}
+
+// rate reads a saved rate, failing on a row the form never set.
+func rate(t *testing.T, name string, f *float64) float64 {
+	t.Helper()
+	if f == nil {
+		t.Fatalf("rate %s was not saved", name)
+	}
+	return *f
+}
+
+// TestAcceptance_49_PricesFormEditorSavesEveryRow: the Prices editor posts
+// its whole table as repeated per-column fields, so every row on screen must
+// survive the save — editing one row keeps the others, and deleting a row
+// removes that row alone. A collision between two posted rows is reported,
+// not quietly narrowed to the first one.
+func TestAcceptance_49_PricesFormEditorSavesEveryRow(t *testing.T) {
+	h := testutil.Start(t)
+	up := testutil.NewUpstream(t, "ollama", "only-model")
+	st, body := dashSaveDoc(t, h, "", nil,
+		dashHostDoc("solo", []string{"127.0.0.1"}, dashServerDoc("llm", up.Port(), "ollama")))
+	if st != 200 {
+		t.Fatalf("hosts-only seed: %d %s", st, body)
+	}
+
+	qwen := dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b", in: "0.25", out: "1.00"}
+	mystery := dashPriceFormRow{model: "mystery-model", in: "2", out: "8", cached: "0.5", reasoning: "8"}
+
+	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
+		dashPricesForm(t, h, "USD", "", qwen, mystery))
+	if st != 200 || !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("prices/save with two rows: %d %s", st, body)
+	}
+
+	p := dashExportedPrices(t, h)
+	if p == nil || len(p.Models) != 2 {
+		t.Fatalf("every posted row must be saved, none dropped: %#v", p)
+	}
+	if p.Currency != "USD" || p.Models[0].Model != "mystery-model" || p.Models[1].Model != "qwen3.8:27b" {
+		t.Fatalf("saved section = %v %+v", p.Currency, p.Models)
+	}
+	if m := p.Models[0]; rate(t, "mystery input", m.Input) != 2 || rate(t, "mystery output", m.Output) != 8 ||
+		rate(t, "mystery cached", m.CachedInput) != 0.5 || rate(t, "mystery reasoning", m.ReasoningOutput) != 8 {
+		t.Fatalf("second row's rates were lost or shifted: %+v", m)
+	}
+	q := p.Models[1]
+	if rate(t, "qwen input", q.Input) != 0.25 || rate(t, "qwen output", q.Output) != 1 {
+		t.Fatalf("first row's rates: %+v", q)
+	}
+	if len(q.Aliases) != 2 || q.Aliases[0] != "qwen-27b" || q.Aliases[1] != "qwen27" {
+		// Both aliases arrived; Normalize sorts them for the canonical export.
+		t.Fatalf("second column of the first row: %#v", q.Aliases)
+	}
+	if q.CachedInput != nil || q.ReasoningOutput != nil {
+		t.Fatalf("blank rates must stay unset, not zeroed: %+v", q)
+	}
+
+	// Editing one row re-posts the whole table: the untouched row stays.
+	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
+		dashPricesForm(t, h, "USD", "",
+			dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b", in: "0.10", out: "0.80"},
+			mystery))
+	if st != 200 {
+		t.Fatalf("prices/save editing one row: %d %s", st, body)
+	}
+	if p = dashExportedPrices(t, h); len(p.Models) != 2 ||
+		rate(t, "edited input", p.Models[1].Input) != 0.10 ||
+		rate(t, "untouched cached", p.Models[0].CachedInput) != 0.5 {
+		t.Fatalf("editing a row must not drop or shift the others: %+v", p.Models)
+	}
+
+	// Deleting a row through its own button removes that row alone.
+	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
+		dashPricesForm(t, h, "USD", "mystery-model",
+			dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b", in: "0.10", out: "0.80"},
+			mystery))
+	if st != 200 {
+		t.Fatalf("prices/save deleting a row: %d %s", st, body)
+	}
+	if p = dashExportedPrices(t, h); p == nil || len(p.Models) != 1 || p.Models[0].Model != "qwen3.8:27b" {
+		t.Fatalf("delete must remove the clicked row only: %+v", p)
+	}
+
+	// Two posted rows colliding on one name is a violation naming both, with
+	// the live config left alone (scenario 22 through the screen).
+	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
+		dashPricesForm(t, h, "USD", "",
+			dashPriceFormRow{model: "same-model", in: "1", out: "1"},
+			dashPriceFormRow{model: "same-model", in: "2", out: "2"}))
+	if st != 422 || !strings.Contains(body, "duplicate model/alias") {
+		t.Fatalf("colliding rows must be reported: %d %s", st, body)
+	}
+	if p = dashExportedPrices(t, h); p == nil || len(p.Models) != 1 || p.Models[0].Model != "qwen3.8:27b" {
+		t.Fatalf("a rejected save must leave the live prices alone: %+v", p)
 	}
 }
