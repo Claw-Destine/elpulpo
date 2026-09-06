@@ -31,18 +31,16 @@ type Server struct {
 	API            string `yaml:"api"`
 	ID             string `yaml:"id"`
 	Description    string `yaml:"description,omitempty"`
-	Postfix        string `yaml:"postfix,omitempty"`
 	Scheme         string `yaml:"scheme,omitempty"`
 	AuthToken      string `yaml:"auth_token,omitempty"`
 	MaxConcurrency int    `yaml:"max_concurrency"`
 }
 
-// NameSegment is the postfix that appears in published model ids.
+// NameSegment is the segment that appears in published model ids. It is by
+// definition the server id, so the same value both names the server on the
+// dashboard/usage rows and appears in the id clients address.
 func (s Server) NameSegment() string {
-	if s.Postfix != "" {
-		return s.Postfix
-	}
-	return s.API
+	return s.ID
 }
 
 // SchemeOrDefault returns the configured scheme or http.

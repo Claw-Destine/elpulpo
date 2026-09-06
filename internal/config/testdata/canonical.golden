@@ -15,7 +15,6 @@ hosts:
         - port: 8000
           api: openai
           id: vllm
-          postfix: vllm
           scheme: https
           auth_token: s3cret
           max_concurrency: 4

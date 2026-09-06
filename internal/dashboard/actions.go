@@ -390,7 +390,6 @@ func parseServerFields(fields map[string]string) (config.Server, error) {
 	srv.ID = strings.TrimSpace(fieldStr(fields, "id"))
 	srv.Description = fieldStr(fields, "description")
 	srv.API = strings.TrimSpace(fieldStr(fields, "api"))
-	srv.Postfix = strings.TrimSpace(fieldStr(fields, "postfix"))
 	srv.Scheme = strings.TrimSpace(fieldStr(fields, "scheme"))
 	srv.AuthToken = fieldStr(fields, "auth_token")
 	if p := atoi(fieldStr(fields, "port")); p != 0 {

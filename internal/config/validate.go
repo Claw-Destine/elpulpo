@@ -253,7 +253,6 @@ func (va *validator) servers(path string, n *yaml.Node, host *Host, missing bool
 	}
 	perID := map[string]int{}
 	perPort := map[string]int{}
-	perSeg := map[string]int{}
 	for i, sn := range n.Content {
 		spath := fmt.Sprintf("%s[%d]", path, i)
 		if sn.Kind != yaml.MappingNode {
@@ -263,7 +262,7 @@ func (va *validator) servers(path string, n *yaml.Node, host *Host, missing bool
 		allowed := map[string]bool{"port": true, "api": true, "id": true, "description": true,
 			"postfix": true, "scheme": true, "auth_token": true, "max_concurrency": true}
 		var srv Server
-		var idN, portN, apiN, postN *yaml.Node
+		var idN, portN, apiN *yaml.Node
 		for _, kv := range mapEntries(sn, spath, va, allowed) {
 			switch kv[0].Value {
 			case "port":
@@ -275,7 +274,8 @@ func (va *validator) servers(path string, n *yaml.Node, host *Host, missing bool
 			case "description":
 				va.scalar(spath+".description", kv[1], &srv.Description)
 			case "postfix":
-				postN = kv[1]
+				// Removed field: the name segment is now the server id.
+				va.add(spath+".postfix", kv[1], "is no longer supported — the name segment in published model ids is the server id; remove this field")
 			case "scheme":
 				var scheme string
 				if va.scalar(spath+".scheme", kv[1], &scheme) {
@@ -340,19 +340,9 @@ func (va *validator) servers(path string, n *yaml.Node, host *Host, missing bool
 				}
 			}
 		}
-		if postN != nil {
-			va.scalar(spath+".postfix", postN, &srv.Postfix)
-			if srv.Postfix != "" && !IDPattern.MatchString(srv.Postfix) {
-				va.add(spath+".postfix", postN, "must match [a-z0-9][a-z0-9-]{0,31}, got %q", srv.Postfix)
-			}
-		}
-		if seg := srv.NameSegment(); srv.API != "" || srv.Postfix != "" {
-			if ln, dup := perSeg[seg]; dup {
-				va.addMsg(spath+".postfix", sn, fmt.Sprintf("resolved name segment %q is used by another server on this host (also at line %d); published model ids would collide", seg, ln))
-			} else {
-				perSeg[seg] = sn.Line
-			}
-		}
+		// The name segment is the server id, whose within-host uniqueness is
+		// already enforced above, so two servers on one host can never publish
+		// colliding model ids.
 		host.Servers = append(host.Servers, srv)
 	}
 	_ = missing

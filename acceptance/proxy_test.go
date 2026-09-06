@@ -26,7 +26,7 @@ func (n naming) config() *config.Config {
 	return &config.Config{Hosts: []config.Host{
 		{ID: "minion1", HostAddresses: []string{"127.0.0.1"}, Servers: []config.Server{
 			{ID: "ollama", Port: n.Up1.Port(), API: "ollama"},
-			{ID: "vllm", Port: n.UpVllm.Port(), API: "openai", Postfix: "vllm"},
+			{ID: "vllm", Port: n.UpVllm.Port(), API: "openai"},
 		}},
 		{ID: "minion2", HostAddresses: []string{"127.0.0.2"}, Servers: []config.Server{
 			{ID: "ollama", Port: n.Up2.Port(), API: "ollama"},
@@ -221,10 +221,10 @@ func TestAcceptance_6_EstimatedFallback(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("nouser-model-openai@solo")
+	h.WaitForModel("nouser-model-main@solo")
 
 	st, body := h.Chat("", map[string]any{
-		"model":    "nouser-model-openai@solo",
+		"model":    "nouser-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "a prompt with some characters in it to count"}},
 	})
 	if st != 200 {
@@ -284,12 +284,12 @@ func TestAcceptance_8_ClientDisconnect(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai", MaxConcurrency: 1},
 		}},
 	}})
-	h.WaitForModel("held-model-openai@solo")
+	h.WaitForModel("held-model-main@solo")
 
 	// Stream in, then hang up while the upstream holds the stream open.
 	nChunks := 0
 	st, seen, _ := h.ChatStream("", map[string]any{
-		"model":    "held-model-openai@solo",
+		"model":    "held-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 		"stream":   true,
 	}, func(string) bool {
@@ -304,7 +304,7 @@ func TestAcceptance_8_ClientDisconnect(t *testing.T) {
 	// stream released its concurrency slot.
 	start := time.Now()
 	st2, body := h.Chat("", map[string]any{
-		"model":    "held-model-openai@solo",
+		"model":    "held-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "hi again"}},
 	})
 	if st2 != 200 {
@@ -333,7 +333,7 @@ func TestAcceptance_9_QueueAndBusy(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai", MaxConcurrency: 1},
 		}},
 	}})
-	h.WaitForModel("queued-model-openai@solo")
+	h.WaitForModel("queued-model-main@solo")
 
 	// Part A: queued second request is served once the first finishes.
 	hold := make(chan struct{})
@@ -341,7 +341,7 @@ func TestAcceptance_9_QueueAndBusy(t *testing.T) {
 	firstDone := make(chan struct{})
 	go func() {
 		h.ChatStream("", map[string]any{
-			"model":    "queued-model-openai@solo",
+			"model":    "queued-model-main@solo",
 			"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 			"stream":   true,
 		}, func(string) bool { return true })
@@ -351,7 +351,7 @@ func TestAcceptance_9_QueueAndBusy(t *testing.T) {
 	second := make(chan int, 1)
 	go func() {
 		st, _ := h.Chat("", map[string]any{
-			"model":    "queued-model-openai@solo",
+			"model":    "queued-model-main@solo",
 			"messages": []any{map[string]string{"role": "user", "content": "second"}},
 		})
 		second <- st
@@ -381,14 +381,14 @@ func TestAcceptance_9_QueueAndBusy(t *testing.T) {
 	up.SetHold(held2)
 	go func() {
 		h.ChatStream("", map[string]any{
-			"model":    "queued-model-openai@solo",
+			"model":    "queued-model-main@solo",
 			"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 			"stream":   true,
 		}, func(string) bool { return true })
 	}()
 	time.Sleep(300 * time.Millisecond)
 	st, body := h.Chat("", map[string]any{
-		"model":    "queued-model-openai@solo",
+		"model":    "queued-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "busy?"}},
 	})
 	if st != 429 {
@@ -479,13 +479,13 @@ func TestAcceptance_29_OversizedBody(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai", MaxConcurrency: 1},
 		}},
 	}})
-	h.WaitForModel("small-model-openai@solo")
+	h.WaitForModel("small-model-main@solo")
 	if v := h.UpdateSettings(map[string]string{"max_request_size": "1KiB"}); len(v) > 0 {
 		t.Fatalf("settings: %v", v)
 	}
 
 	big := map[string]any{
-		"model":    "small-model-openai@solo",
+		"model":    "small-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": strings.Repeat("x", 4000)}},
 	}
 	st, body := h.Chat("", big)
@@ -503,7 +503,7 @@ func TestAcceptance_29_OversizedBody(t *testing.T) {
 		t.Fatalf("settings: %v", v)
 	}
 	st, body = h.Chat("", map[string]any{
-		"model":    "small-model-openai@solo",
+		"model":    "small-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "fits"}},
 	})
 	if st != 200 {
@@ -522,7 +522,7 @@ func TestAcceptance_30_FirstByteTimeout(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("slow-model-openai@solo")
+	h.WaitForModel("slow-model-main@solo")
 	if v := h.UpdateSettings(map[string]string{"first_byte_timeout": "1s"}); len(v) > 0 {
 		t.Fatalf("settings: %v", v)
 	}
@@ -530,7 +530,7 @@ func TestAcceptance_30_FirstByteTimeout(t *testing.T) {
 
 	start := time.Now()
 	st, body := h.Chat("", map[string]any{
-		"model":    "slow-model-openai@solo",
+		"model":    "slow-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 	})
 	if d := time.Since(start); d > 3*time.Second {
@@ -559,14 +559,14 @@ func TestAcceptance_31_StreamIdleTimeout(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("stalling-model-openai@solo")
+	h.WaitForModel("stalling-model-main@solo")
 	if v := h.UpdateSettings(map[string]string{"stream_idle_timeout": "1s"}); len(v) > 0 {
 		t.Fatalf("settings: %v", v)
 	}
 	up.MidStreamStall = 4 * time.Second
 
 	st, seen, _ := h.ChatStream("", map[string]any{
-		"model":    "stalling-model-openai@solo",
+		"model":    "stalling-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 		"stream":   true,
 	}, func(string) bool { return true })
@@ -596,10 +596,10 @@ func TestAcceptance_43_AuthTokenForwarded(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai", AuthToken: "secret-abc"},
 		}},
 	}})
-	h.WaitForModel("secret-model-openai@solo")
+	h.WaitForModel("secret-model-main@solo")
 
 	st, body := h.Chat("client-token", map[string]any{
-		"model":    "secret-model-openai@solo",
+		"model":    "secret-model-main@solo",
 		"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 	})
 	if st != 200 {
@@ -698,7 +698,7 @@ func TestProxyRequestLogLines(t *testing.T) {
 			{ID: "main", Port: up.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("log-model-openai@solo")
+	h.WaitForModel("log-model-main@solo")
 
 	chat := func(model string, stream bool) {
 		t.Helper()
@@ -719,15 +719,15 @@ func TestProxyRequestLogLines(t *testing.T) {
 		}
 	}
 
-	chat("log-model-openai@solo", false)
-	chat("log-model-openai@solo", true)
+	chat("log-model-main@solo", false)
+	chat("log-model-main@solo", true)
 	// Unknown model: 404, no usage row.
 	if st, _ := chatStatus(t, h, "nope-not-here"); st != 404 {
 		t.Fatalf("unknown model: status %d", st)
 	}
 	// Upstream failure: a real failure, so ERROR.
 	up.Status = 500
-	if st, _ := chatStatus(t, h, "log-model-openai@solo"); st != 502 {
+	if st, _ := chatStatus(t, h, "log-model-main@solo"); st != 502 {
 		t.Fatalf("upstream 500: status %d", st)
 	}
 
@@ -739,7 +739,7 @@ func TestProxyRequestLogLines(t *testing.T) {
 
 	// Routed requests: one line each, saying where it went and what it cost.
 	for i, want := range [][]string{
-		{"level=INFO", "host=solo", "server=main", "model=log-model-openai@solo",
+		{"level=INFO", "host=solo", "server=main", "model=log-model-main@solo",
 			"stream=false", "status=ok", "http_status=200", "wait_ms=", "tokens_in=", "estimated=false"},
 		{"level=INFO", "host=solo", "server=main", "stream=true",
 			"status=ok", "http_status=200", "ttft_ms="},

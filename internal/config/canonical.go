@@ -22,7 +22,6 @@ type serverOut struct {
 	API            string `yaml:"api"`
 	ID             string `yaml:"id"`
 	Description    string `yaml:"description,omitempty"`
-	Postfix        string `yaml:"postfix,omitempty"`
 	Scheme         string `yaml:"scheme"`
 	AuthToken      string `yaml:"auth_token"`
 	MaxConcurrency int    `yaml:"max_concurrency"`
@@ -77,7 +76,7 @@ func Canonical(c *Config) []byte {
 		for _, s := range h.Servers {
 			ho.Servers = append(ho.Servers, serverOut{
 				Port: s.Port, API: s.API, ID: s.ID, Description: s.Description,
-				Postfix: s.Postfix, Scheme: s.SchemeOrDefault(), AuthToken: s.AuthToken,
+				Scheme: s.SchemeOrDefault(), AuthToken: s.AuthToken,
 				MaxConcurrency: s.MaxConcurrency,
 			})
 		}

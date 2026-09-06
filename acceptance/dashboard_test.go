@@ -374,15 +374,15 @@ func TestAcceptance_13_RowsCSVMatchesSummary(t *testing.T) {
 			{ID: "api", Port: upEst.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("alpha-model-ollama@hosta")
-	h.WaitForModel("beta-model-openai@hostb")
-	h.WaitForModel("gamma-model-openai@hostc")
-	h.WaitForModel("delta-model-openai@hostd")
+	h.WaitForModel("alpha-model-llm@hosta")
+	h.WaitForModel("beta-model-api@hostb")
+	h.WaitForModel("gamma-model-api@hostc")
+	h.WaitForModel("delta-model-api@hostd")
 
-	dashChat(t, h, "alpha-model-ollama@hosta")
-	dashChat(t, h, "alpha-model-ollama@hosta")
-	dashChat(t, h, "delta-model-openai@hostd") // estimated (no usage upstream)
-	if st, body := dashChatStatus(t, h, "beta-model-openai@hostb"); st != 502 {
+	dashChat(t, h, "alpha-model-llm@hosta")
+	dashChat(t, h, "alpha-model-llm@hosta")
+	dashChat(t, h, "delta-model-api@hostd") // estimated (no usage upstream)
+	if st, body := dashChatStatus(t, h, "beta-model-api@hostb"); st != 502 {
 		t.Fatalf("upstream-500 chat: %d %s", st, body)
 	}
 	// One upstream_timeout row: the server stalls past first_byte_timeout.
@@ -390,7 +390,7 @@ func TestAcceptance_13_RowsCSVMatchesSummary(t *testing.T) {
 	if v := h.UpdateSettings(map[string]string{"first_byte_timeout": "1s"}); len(v) > 0 {
 		t.Fatalf("settings: %v", v)
 	}
-	if st, body := dashChatStatus(t, h, "gamma-model-openai@hostc"); st != 504 {
+	if st, body := dashChatStatus(t, h, "gamma-model-api@hostc"); st != 504 {
 		t.Fatalf("stalled chat: %d %s", st, body)
 	}
 
@@ -508,10 +508,10 @@ func TestAcceptance_14_PricesCoverOneModelOnly(t *testing.T) {
 			{Model: "alpha-model", Input: dashF(0.25), Output: dashF(1.00)},
 		}},
 	})
-	h.WaitForModel("alpha-model-ollama@hosta")
-	h.WaitForModel("beta-model-openai@hostb")
-	dashChat(t, h, "alpha-model-ollama@hosta")
-	dashChat(t, h, "beta-model-openai@hostb")
+	h.WaitForModel("alpha-model-llm@hosta")
+	h.WaitForModel("beta-model-api@hostb")
+	dashChat(t, h, "alpha-model-llm@hosta")
+	dashChat(t, h, "beta-model-api@hostb")
 
 	s := dashSummaryAt(t, h, "group_by=model")
 	if !s.SavingsOn || s.Currency != "USD" {
@@ -612,10 +612,10 @@ func TestAcceptance_23_NoPriceSetListed(t *testing.T) {
 			{Model: "alpha-model", Input: dashF(0.25), Output: dashF(1.00)},
 		}},
 	})
-	h.WaitForModel("alpha-model-ollama@hosta")
-	h.WaitForModel("mystery-model-openai@hostb")
-	dashChat(t, h, "alpha-model-ollama@hosta")
-	dashChat(t, h, "mystery-model-openai@hostb")
+	h.WaitForModel("alpha-model-llm@hosta")
+	h.WaitForModel("mystery-model-api@hostb")
+	dashChat(t, h, "alpha-model-llm@hosta")
+	dashChat(t, h, "mystery-model-api@hostb")
 
 	s := dashSummaryAt(t, h, "group_by=model")
 	wantAlpha := dashAmount(111, 42, 0.25, 1.00)
@@ -701,7 +701,7 @@ func TestAcceptance_24_ImportRoundTrip(t *testing.T) {
 // --- scenario 25 ------------------------------------------------------------
 
 // TestAcceptance_25_ImportReportsEveryViolation: an import with an
-// unsupported adapter, a duplicate host id and a colliding name segment is
+// unsupported adapter, a duplicate host id and a removed postfix field is
 // refused with all three paths; nothing is applied.
 func TestAcceptance_25_ImportReportsEveryViolation(t *testing.T) {
 	h := testutil.Start(t)
@@ -746,7 +746,7 @@ func TestAcceptance_25_ImportReportsEveryViolation(t *testing.T) {
 	for _, want := range []struct{ path, msg string }{
 		{"hosts[1].servers[0].api", "unsupported adapter"},
 		{"hosts[1].id", "duplicate host id"},
-		{"hosts[0].servers[1].postfix", "collide"},
+		{"hosts[0].servers[1].postfix", "no longer supported"},
 	} {
 		v, ok := paths[want.path]
 		if !ok {
@@ -856,9 +856,9 @@ func TestAcceptance_27_FirstSaveViaDashboard(t *testing.T) {
 	if !strings.Contains(string(data), "id: solo") {
 		t.Fatalf("created file does not carry the host:\n%s", data)
 	}
-	h.WaitForModel("firstboot-model-ollama@solo")
+	h.WaitForModel("firstboot-model-llm@solo")
 	ids := h.ModelIDs()
-	if len(ids) != 1 || ids[0] != "firstboot-model-ollama@solo" {
+	if len(ids) != 1 || ids[0] != "firstboot-model-llm@solo" {
 		t.Fatalf("published ids = %s", testutil.ModelNames(ids))
 	}
 }
@@ -890,11 +890,11 @@ func TestAcceptance_32_SummaryCSVMatchesRows(t *testing.T) {
 			{Model: "beta-model", Input: dashF(betaIn), Output: dashF(betaOut)},
 		}},
 	})
-	h.WaitForModel("alpha-model-ollama@hosta")
-	h.WaitForModel("beta-model-openai@hostb")
-	dashChat(t, h, "alpha-model-ollama@hosta")
-	dashChat(t, h, "alpha-model-ollama@hosta")
-	dashChat(t, h, "beta-model-openai@hostb")
+	h.WaitForModel("alpha-model-llm@hosta")
+	h.WaitForModel("beta-model-api@hostb")
+	dashChat(t, h, "alpha-model-llm@hosta")
+	dashChat(t, h, "alpha-model-llm@hosta")
+	dashChat(t, h, "beta-model-api@hostb")
 
 	if ct, cd := dashExportHeaders(t, h.URL("/dashboard/export/summary.csv?group_by=model&period=month")); !strings.Contains(ct, "text/csv") ||
 		!strings.Contains(cd, "attachment") {
@@ -1008,8 +1008,8 @@ func TestAcceptance_33_CatalogApplyWritesRates(t *testing.T) {
 			{ID: "api", Port: up.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("gpt-4o-openai@solo")
-	dashChat(t, h, "gpt-4o-openai@solo")
+	h.WaitForModel("gpt-4o-api@solo")
+	dashChat(t, h, "gpt-4o-api@solo")
 
 	section := dashNoPriceSection(t, h)
 	if !strings.Contains(section, "gpt-4o") {

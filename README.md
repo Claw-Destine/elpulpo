@@ -72,8 +72,8 @@ hosts:
     servers:
     -   port: 11434            # required, unique within the host
         api: ollama            # required, ollama|openai
-        id: ollama             # required, unique within the host
-        postfix: ollama        # optional; the id segment, defaults to api
+        id: ollama             # required, unique within the host; also the
+                               # id segment of this server's published model ids
         scheme: http           # http (default) | https (NOT verified — see limits)
         auth_token: ""         # forwarded as Authorization: Bearer …
         max_concurrency: 0     # 0 = unlimited, else FIFO queue
@@ -89,7 +89,7 @@ prices:
 ```
 
 Clients address servers by *published model id*
-(`<base-model>-<postfix ?? api>@<host-id>`); `GET /v1/models` lists
+(`<base-model>-<server-id>@<host-id>`); `GET /v1/models` lists
 exactly what you may request. Names come from the servers, not the
 config: a model is published because a healthy server reports it.
 

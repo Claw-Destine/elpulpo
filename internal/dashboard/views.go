@@ -59,9 +59,9 @@ type FormHost struct {
 }
 
 type FormServer struct {
-	HostID, ID, API, Description, Postfix, Scheme, AuthToken string
-	Port, MaxConcurrency                                     int
-	Models                                                   []string // observed models (probed)
+	HostID, ID, API, Description, Scheme, AuthToken string
+	Port, MaxConcurrency                            int
+	Models                                          []string // observed models (probed)
 }
 
 func (h *Handler) serversView() ServersView {
@@ -77,7 +77,7 @@ func (h *Handler) serversView() ServersView {
 		for _, srv := range host.Servers {
 			fh.Servers = append(fh.Servers, FormServer{
 				HostID: host.ID, ID: srv.ID, API: srv.API, Description: srv.Description,
-				Postfix: srv.Postfix, Scheme: srv.SchemeOrDefault(), AuthToken: srv.AuthToken,
+				Scheme: srv.SchemeOrDefault(), AuthToken: srv.AuthToken,
 				Port: srv.Port, MaxConcurrency: srv.MaxConcurrency,
 				Models: seen[host.ID+"\x00"+srv.ID],
 			})

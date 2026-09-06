@@ -202,7 +202,7 @@ templ ServersFormsFragment(v ServersView) {
 							<input type="hidden" name="h" value={ v.Hash }/>
 							<input type="hidden" name="host_id" value={ host.ID }/>
 							<input type="hidden" name="original_id" value={ srv.ID }/>
-							<label>Server ID<input name="id" value={ srv.ID }/></label>
+							<label>Server ID (name segment in published model ids)<input name="id" value={ srv.ID }/></label>
 							<label>
 								API adapter
 								<select name="api">
@@ -218,7 +218,6 @@ templ ServersFormsFragment(v ServersView) {
 									<option value="https" selected={ srv.Scheme == "https" }>https</option>
 								</select>
 							</label>
-							<label>Name segment postfix (empty = api)<input name="postfix" value={ srv.Postfix }/></label>
 							<label>Description<input name="description" value={ srv.Description }/></label>
 							<label>Auth token (sent upstream as Bearer)<input name="auth_token" value={ srv.AuthToken }/></label>
 							<label>Max concurrency (0 = unlimited)<input name="max_concurrency" value={ fmtI(int64(srv.MaxConcurrency)) }/></label>
@@ -237,7 +236,7 @@ templ ServersFormsFragment(v ServersView) {
 					<form hx-post="/dashboard/action/server/save" hx-target="#servers-msg">
 						<input type="hidden" name="h" value={ v.Hash }/>
 						<input type="hidden" name="host_id" value={ host.ID }/>
-						<label>Server ID<input name="id" placeholder="ollama"/></label>
+						<label>Server ID (name segment in published model ids)<input name="id" placeholder="ollama"/></label>
 						<label>
 							API adapter
 							<select name="api">
@@ -253,7 +252,6 @@ templ ServersFormsFragment(v ServersView) {
 								<option value="https" selected={ false }>https</option>
 							</select>
 						</label>
-						<label>Name segment postfix (empty = api)<input name="postfix"/></label>
 						<label>Description<input name="description"/></label>
 						<label>Auth token (sent upstream as Bearer)<input name="auth_token"/></label>
 						<label>Max concurrency (0 = unlimited)<input name="max_concurrency" value="0"/></label>

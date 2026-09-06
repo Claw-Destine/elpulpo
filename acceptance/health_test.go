@@ -34,7 +34,7 @@ func TestAcceptance_16_AddressFallback(t *testing.T) {
 		}},
 	}})
 
-	h.WaitForModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
 	st, ok := stateFor(h, "m", "llm")
 	if !ok {
 		t.Fatal("server state missing")
@@ -59,7 +59,7 @@ func TestAcceptance_17_NoFailback(t *testing.T) {
 			{ID: "llm", Port: port2, API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
 
 	// The first address comes back on the same port.
 	up1 := testutil.NewUpstreamOnPort(t, fmt.Sprintf("127.0.0.1:%d", port2), "ollama", "qwen3.8:27b")
@@ -91,7 +91,7 @@ func TestAcceptance_18_ReelectToFirst(t *testing.T) {
 			{ID: "llm", Port: port2, API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
 
 	// The first address is now alive; the active fallback dies.
 	up1 := testutil.NewUpstreamOnPort(t, fmt.Sprintf("127.0.0.1:%d", port2), "ollama", "qwen3.8:27b")
@@ -107,9 +107,9 @@ func TestAcceptance_18_ReelectToFirst(t *testing.T) {
 	if !strings.Contains(h.LogString(), "switched address") {
 		t.Fatalf("switch not logged at INFO:\n%s", h.LogString())
 	}
-	h.WaitForModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
 	if st, body := h.Chat("", map[string]any{
-		"model":    "qwen3.8:27b-ollama@m",
+		"model":    "qwen3.8:27b-llm@m",
 		"messages": []any{map[string]string{"role": "user", "content": "hi"}},
 	}); st != 200 {
 		t.Fatalf("request after switch: %d %s", st, body)
@@ -129,7 +129,7 @@ func TestAcceptance_19_ThreeFailuresDown(t *testing.T) {
 			{ID: "llm", Port: up.Port(), API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
 	up.Close()
 
 	h.Eventually(30*time.Second, "server marked down after three failures", func() bool {
@@ -165,7 +165,7 @@ func TestAcceptance_20_AddressEditReelection(t *testing.T) {
 			{ID: "llm", Port: up2.Port(), API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
 
 	// A new server appears at a NEW preferred position (127.0.0.3) with a
 	// different model list; edit the list to put it first.
@@ -178,8 +178,8 @@ func TestAcceptance_20_AddressEditReelection(t *testing.T) {
 	if !strings.Contains(h.LogString(), "dropping the address election") {
 		t.Fatalf("address edit must drop the election:\n%s", h.LogString())
 	}
-	h.WaitForModel("gemma4:31b-ollama@m")
-	h.WaitForNoModel("qwen3.8:27b-ollama@m")
+	h.WaitForModel("gemma4:31b-llm@m")
+	h.WaitForNoModel("qwen3.8:27b-llm@m")
 	st, _ := stateFor(h, "m", "llm")
 	if st.ActiveAddr != "127.0.0.3" {
 		t.Fatalf("election must start from position 0: active = %q", st.ActiveAddr)
@@ -201,7 +201,7 @@ func TestHealthModelListLogging(t *testing.T) {
 			{ID: "llm", Port: up.Port(), API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("alpha:1-ollama@m")
+	h.WaitForModel("alpha:1-llm@m")
 
 	connect := ""
 	h.Eventually(9*time.Second, "connect line naming the models", func() bool {
@@ -217,8 +217,8 @@ func TestHealthModelListLogging(t *testing.T) {
 
 	// The same address now answers with a different list.
 	up.SetModels("alpha:1", "gamma:3")
-	h.WaitForModel("gamma:3-ollama@m")
-	h.WaitForNoModel("beta:2-ollama@m")
+	h.WaitForModel("gamma:3-llm@m")
+	h.WaitForNoModel("beta:2-llm@m")
 
 	changed := ""
 	h.Eventually(9*time.Second, "model list change logged", func() bool {

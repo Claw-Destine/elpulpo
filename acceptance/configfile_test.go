@@ -16,8 +16,9 @@ import (
 )
 
 // TestAcceptance_11_ValidationRejectsSave: duplicate host ids, duplicate
-// server ids, colliding name segments and shared addresses are refused
-// with field-level errors; the live configuration and /v1/models stay put.
+// server ids and shared addresses are refused with field-level errors; the
+// live configuration and /v1/models stay put. (Name segments are the server
+// ids now, so a segment collision is simply a duplicate server id.)
 func TestAcceptance_11_ValidationRejectsSave(t *testing.T) {
 	h := testutil.Start(t)
 	n := startNaming(t, h)
@@ -33,10 +34,6 @@ func TestAcceptance_11_ValidationRejectsSave(t *testing.T) {
 	dupServer := n.config()
 	dupServer.Hosts[0].Servers = append(dupServer.Hosts[0].Servers, config.Server{ID: "ollama", Port: 20000, API: "openai"})
 	mustViolate(t, h, dupServer, "duplicate server id")
-
-	dupSeg := n.config()
-	dupSeg.Hosts[0].Servers[1].Postfix = "ollama" // resolves to "ollama" twice on minion1
-	mustViolate(t, h, dupSeg, "published model ids would collide")
 
 	sharedAddr := n.config()
 	sharedAddr.Hosts[1].HostAddresses = []string{"127.0.0.1"}
@@ -132,7 +129,7 @@ func TestAcceptance_38_HandEditHonoured(t *testing.T) {
 	if err := os.WriteFile(h.App.Opts.ConfigPath, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.WaitForModel("handadded-model-ollama@handhost")
+	h.WaitForModel("handadded-model-llm@handhost")
 	if !strings.Contains(h.LogString(), "configuration reloaded from hand edit") {
 		t.Fatalf("reload must be logged at INFO:\n%s", h.LogString())
 	}

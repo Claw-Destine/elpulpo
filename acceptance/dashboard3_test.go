@@ -236,22 +236,22 @@ func TestAcceptance_48_ServersScreenFollowsStateAndModelChanges(t *testing.T) {
 			{ID: "llm", Port: up.Port(), API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("qwen3.8:27b-ollama@m")
-	h.WaitForModel("gemma4:31b-ollama@m")
+	h.WaitForModel("qwen3.8:27b-llm@m")
+	h.WaitForModel("gemma4:31b-llm@m")
 	h.Eventually(10*time.Second, "both models are listed", func() bool {
 		region := dashRegion(t, h, "models")
-		return strings.Contains(region, "qwen3.8:27b-ollama@m") &&
-			strings.Contains(region, "gemma4:31b-ollama@m")
+		return strings.Contains(region, "qwen3.8:27b-llm@m") &&
+			strings.Contains(region, "gemma4:31b-llm@m")
 	})
 
 	// The upstream unloads one model: it disappears from both regions.
 	up.SetModels("qwen3.8:27b")
-	h.WaitForNoModel("gemma4:31b-ollama@m")
+	h.WaitForNoModel("gemma4:31b-llm@m")
 	h.Eventually(20*time.Second, "the unloaded model leaves the model list", func() bool {
-		return !strings.Contains(dashRegion(t, h, "models"), "gemma4:31b-ollama@m")
+		return !strings.Contains(dashRegion(t, h, "models"), "gemma4:31b-llm@m")
 	})
 	h.Eventually(20*time.Second, "the state table counts the model that is left", func() bool {
-		return strings.Contains(dashRegion(t, h, ""), `<td class="num" title="qwen3.8:27b-ollama@m">1</td>`)
+		return strings.Contains(dashRegion(t, h, ""), `<td class="num" title="qwen3.8:27b-llm@m">1</td>`)
 	})
 
 	// The server stops answering entirely.
@@ -261,7 +261,7 @@ func TestAcceptance_48_ServersScreenFollowsStateAndModelChanges(t *testing.T) {
 		return ok && !s.Up && s.ConsecFails >= 3
 	})
 	models := dashRegion(t, h, "models")
-	if !strings.Contains(models, "qwen3.8:27b-ollama@m") {
+	if !strings.Contains(models, "qwen3.8:27b-llm@m") {
 		t.Fatalf("a known model must stay listed while its server is down:\n%s", models)
 	}
 	if !strings.Contains(models, ">withdrawn<") {

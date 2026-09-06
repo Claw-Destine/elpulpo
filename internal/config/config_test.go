@@ -25,7 +25,6 @@ const fullDoc = `hosts:
     -   port: 8000
         api: openai
         id: vllm
-        postfix: vllm
         scheme: https
         auth_token: "s3cret"
         max_concurrency: 4
@@ -123,6 +122,7 @@ func TestValidationPathsAndLines(t *testing.T) {
     -   port: 11434
         api: ollama
         id: s1
+        postfix: fast
     -   port: 8000
         api: anthropic
         id: s1
@@ -141,6 +141,8 @@ func TestValidationPathsAndLines(t *testing.T) {
 		`hosts[1].servers[1].api`,
 		`unsupported adapter "anthropic"`,
 		`duplicate server id`,
+		`hosts[1].servers[0].postfix`,
+		`no longer supported`,
 		"(line ",
 	} {
 		if !strings.Contains(joined, want) {

@@ -10,9 +10,8 @@ Covers **v1** only. Deferred items are listed in [Out of scope](#out-of-scope-v1
 | host_addresses | the ordered addresses of a host; position 0 is preferred, the rest are fallbacks |
 | server | one LLM endpoint: a host address + port + API adapter |
 | api | the adapter El Pulpo uses to talk to a server (model-list endpoint, chat endpoint, usage parsing) |
-| postfix | name segment used in published model ids, defaults to `api` |
 | base model name | the model name as reported by the server, e.g. `qwen3.8:27b` |
-| published model id | `<base-model>-<postfix ?? api>@<host-id>` — the name clients address |
+| published model id | `<base-model>-<server-id>@<host-id>` — the name clients address |
 | alias | an alternative name for a base model name, host-independent |
 | price entry | the reference prices of one base model name, with its aliases |
 
@@ -36,9 +35,9 @@ hosts:
     servers:
     -   port: 11434           # required
         api: ollama           # required — must be a supported adapter
-        id: ollama            # required — unique within the host
+        id: ollama            # required — unique within the host; the name
+                              #   segment in this server's published model ids
         description: "GPU inference"   # optional
-        postfix: ollama       # optional — defaults to api
         scheme: http          # optional — default http; https, see "Upstream TLS"
         auth_token: ""        # optional — sent upstream as Authorization: Bearer
         max_concurrency: 0    # optional — 0 (default) means unlimited
@@ -66,9 +65,9 @@ currently live configuration stays in place:
   list of two different hosts — El Pulpo could not tell them apart. Addresses are compared as
   normalised strings (lowercased, trailing dot stripped); an IP and a DNS name for the same
   interface are therefore *not* detected as a duplicate.
-- server `id` unique within a host; `port` unique within a host.
-- the resolved name segment (`postfix ?? api`) unique within a host — this is what guarantees that
-  two servers of the same `api` on one host cannot publish colliding model ids.
+- server `id` unique within a host; `port` unique within a host. The `id` is also the name segment
+  of the server's published model ids, so unique ids guarantee that two servers on one host can
+  never publish colliding ids.
 - `api` names a supported adapter.
 - `id` and `host-id` match `[a-z0-9][a-z0-9-]{0,31}` so they are URL- and model-id-safe.
 - every published model id the configuration produces is globally unique, and its base model name
@@ -125,7 +124,6 @@ hosts:
     -   port: 8000
         api: openai
         id: vllm
-        postfix: vllm
 -   host_addresses: [192.168.1.102]
     id: minion2
     servers:
@@ -143,9 +141,10 @@ serving `qwen3.8:27b` + `gemma4:31b` on `minion1:11434`, `deepseek-v4-flash` on 
 - `gpt-oss:120b-ollama@minion2`
 - `qwen3.8:27b-ollama@minion2`
 
-The suffix comes from `postfix ?? api`, never from the server `id`; the id only names the server for
-the dashboard and the `server` column of the usage rows. The same model on two hosts is **two
-distinct ids** and the client chooses one — there is no balancing between them.
+The segment comes from the server `id` — the same name that labels the server on the dashboard and
+fills the `server` column of the usage rows now also addresses its models; `api` only selects the
+adapter. The same model on two hosts is **two distinct ids** and the client chooses one — there is
+no balancing between them.
 
 ### Adapters
 
@@ -426,7 +425,7 @@ single entry covers that model on every host, expressed per 1M tokens in `curren
 | `cached_input` | `tokens_cached` | `input` |
 | `reasoning_output` | `tokens_reasoning` | `output` |
 
-**Matching.** A usage row's base model name is the published id with its `-<segment>@<host-id>`
+**Matching.** A usage row's base model name is the published id with its `-<server-id>@<host-id>`
 suffix removed; the row is priced by the entry whose `model` equals it, or whose `aliases` contain
 it. Matching is exact and case-sensitive — the whole point of an alias is to cover the second
 spelling (`Qwen3-27B` on vLLM, `qwen3.8:27b` on Ollama) without duplicating the price. Aliases affect
@@ -508,7 +507,7 @@ used throughout.
 | 8 | client disconnects mid-stream against `max_concurrency: 1` | row `status: cancelled`; a subsequent request is accepted immediately |
 | 9 | `max_concurrency: 1`, two simultaneous requests | the second is served once the first finishes; with `queue_timeout` exceeded it gets `429 server_busy` |
 | 10 | `ELPULPO_PROXY_TOKEN` set | a request without the token gets `401`; with the token it succeeds; unset variable produces the `WARN` log line |
-| 11 | config with duplicate host id, duplicate server id in a host, duplicate name segment, or an address also listed under another host | save rejected with a field-level error; live config and `GET /v1/models` unchanged |
+| 11 | config with duplicate host id, duplicate server id in a host, or an address also listed under another host | save rejected with a field-level error; live config and `GET /v1/models` unchanged |
 | 12 | `bare model name` request (`model: qwen3.8:27b`), or an alias (`model: qwen27`) | `404 model_not_found` with `reason: not_configured` — only ids listed by `GET /v1/models` are accepted |
 | 13 | period `this month` + `status: ok` filter, then CSV export of rows | every line matches both criteria; totals equal the sums over the exported lines; re-parsing the file gives the same token counts; an export with no matching rows is a header-only file |
 | 14 | price set for one model only | grand total covers that model alone; other models display `no price set` |
@@ -522,7 +521,7 @@ used throughout.
 | 22 | two price entries where one's alias equals the other's `model` | save rejected, both offending paths reported, live config unchanged |
 | 23 | a model in usage that matches no entry or alias | `no price set`, excluded from the grand total, listed on the Prices screen |
 | 24 | export config, import it back unchanged | import preview reports no changes, `GET /v1/models` unchanged, and a second export is byte-identical to the first |
-| 25 | import YAML with an unsupported `api`, a duplicate host id and a duplicate name segment | all three violations reported with their paths; live config and `GET /v1/models` unchanged |
+| 25 | import YAML with an unsupported `api`, a duplicate host id and a `postfix` field (removed: the name segment is the server id now) | all three violations reported with their paths; live config and `GET /v1/models` unchanged |
 | 26 | import YAML that drops `minion2` | preview lists `minion2` as removed; after confirming, behaviour matches scenario 2 |
 | 27 | `ELPULPO_CONFIG` pointing at a file that does not exist | El Pulpo starts with an empty configuration and an empty `GET /v1/models`; the first save through the dashboard creates the file |
 | 28 | a row dated a year ago, `retention_days` at its default | the row is still listed and counted; after setting `retention_days: 30` and running the prune, it is gone, the removal count is logged and the dashboard states history is limited to 30 days |
@@ -594,7 +593,7 @@ follows, and the acceptance suite encodes these readings.
    immediately. `consec_failures` counts rounds in which *no* address answered, not probes.
 3. **Price entries require `input` and `output`**; `cached_input`/`reasoning_output` are optional
    and fall back to them. A price entry with only fallbacks would make savings meaningless.
-4. **`postfix` obeys the id grammar** (`[a-z0-9][a-z0-9-]{0,31}`), as do host and server ids, so
+4. **Host and server ids obey the id grammar** (`[a-z0-9][a-z0-9-]{0,31}`), so
    published ids never take arbitrary shapes. Alias names follow the model-name pattern and must be
    globally unique across every model name *and* every alias — the symmetric collision of scenario
    22 is therefore rejected whichever path carries it, and both offending paths are reported.

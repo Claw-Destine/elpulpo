@@ -60,8 +60,8 @@ func TestAcceptance_34_CatalogNoMatchStaysUnpriced(t *testing.T) {
 			{ID: "api", Port: up.Port(), API: "openai"},
 		}},
 	}})
-	h.WaitForModel("nonexistent-model-xyz-openai@solo")
-	dashChat(t, h, "nonexistent-model-xyz-openai@solo")
+	h.WaitForModel("nonexistent-model-xyz-api@solo")
+	dashChat(t, h, "nonexistent-model-xyz-api@solo")
 
 	section := dashNoPriceSection(t, h)
 	if !strings.Contains(section, "nonexistent-model-xyz") {
@@ -111,8 +111,8 @@ func TestAcceptance_35_CatalogOverwriteConfirmation(t *testing.T) {
 			{Model: "gpt-4o", Input: dashF(1.00), Output: dashF(2.00)},
 		}},
 	})
-	h.WaitForModel("gpt-4o-openai@solo")
-	dashChat(t, h, "gpt-4o-openai@solo")
+	h.WaitForModel("gpt-4o-api@solo")
+	dashChat(t, h, "gpt-4o-api@solo")
 	before := h.ConfigYAML()
 
 	st, body := h.CSRFPost("/dashboard/action/catalog/apply", map[string]any{
@@ -177,8 +177,8 @@ func TestAcceptance_36_CatalogRefusesNonUSD(t *testing.T) {
 			{Model: "economy-model", Input: dashF(1.00), Output: dashF(1.00)},
 		}},
 	})
-	h.WaitForModel("gpt-4o-openai@solo")
-	dashChat(t, h, "gpt-4o-openai@solo")
+	h.WaitForModel("gpt-4o-api@solo")
+	dashChat(t, h, "gpt-4o-api@solo")
 	before := h.ConfigYAML()
 	if !strings.Contains(before, "currency: EUR") {
 		t.Fatalf("precondition: EUR document currency:\n%s", before)
@@ -331,7 +331,7 @@ func TestAcceptance_40_StaleSaveRefused(t *testing.T) {
 			{ID: "llm", Port: up1.Port(), API: "ollama"},
 		}},
 	}})
-	h.WaitForModel("first-model-ollama@solo")
+	h.WaitForModel("first-model-llm@solo")
 
 	// The dashboard form was rendered: this is the hash it carries.
 	oldHash := dashHash(t, h)
@@ -358,7 +358,7 @@ func TestAcceptance_40_StaleSaveRefused(t *testing.T) {
 	if err := os.WriteFile(h.App.Opts.ConfigPath, []byte(edited), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h.WaitForModel("second-model-ollama@host2")
+	h.WaitForModel("second-model-llm@host2")
 	h.Eventually(5*time.Second, "the watcher to adopt the new file hash", func() bool {
 		return dashHash(t, h) != oldHash
 	})
@@ -386,7 +386,7 @@ func TestAcceptance_40_StaleSaveRefused(t *testing.T) {
 	if string(after) != string(onDisk) {
 		t.Fatalf("the refused save wrote the file anyway:\n%s", after)
 	}
-	if ids := strings.Join(h.ModelIDs(), " "); !strings.Contains(ids, "second-model-ollama@host2") {
+	if ids := strings.Join(h.ModelIDs(), " "); !strings.Contains(ids, "second-model-llm@host2") {
 		t.Fatalf("the refused save disturbed the live config: %s", ids)
 	}
 
@@ -395,7 +395,7 @@ func TestAcceptance_40_StaleSaveRefused(t *testing.T) {
 	if st != 200 || !strings.Contains(body, `"ok":true`) {
 		t.Fatalf("save with a fresh hash: %d %s", st, body)
 	}
-	h.WaitForNoModel("second-model-ollama@host2")
+	h.WaitForNoModel("second-model-llm@host2")
 }
 
 // --- scenario 41 ------------------------------------------------------------
@@ -522,7 +522,7 @@ func TestAcceptance_45_HostsOnlyExportRoute(t *testing.T) {
 	if st != 200 || !strings.Contains(body, `"ok":true`) {
 		t.Fatalf("hosts-only save: %d %s", st, body)
 	}
-	h.WaitForModel("only-model-ollama@solo")
+	h.WaitForModel("only-model-llm@solo")
 
 	export := h.ConfigYAML()
 	if !strings.Contains(export, "hosts") {
@@ -559,7 +559,7 @@ func TestAcceptance_45_HostsOnlyExportRoute(t *testing.T) {
 		t.Fatalf("dropping the prices section must return the hosts-only export:\n%s", after)
 	}
 
-	dashChat(t, h, "only-model-ollama@solo")
+	dashChat(t, h, "only-model-llm@solo")
 	if s := dashSummaryAt(t, h, "group_by=model"); s.SavingsOn || s.Currency != "" || s.GrandTotal.Amount != 0 {
 		t.Fatalf("savings must read as disabled with no prices: savings_on=%v currency=%q amount=%v",
 			s.SavingsOn, s.Currency, s.GrandTotal.Amount)

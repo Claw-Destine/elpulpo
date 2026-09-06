@@ -328,7 +328,7 @@ func (m *Manager) RebuildTable() {
 		for _, base := range models {
 			pub := config.PublishID(base, cfg.NameSegment(), st.HostID)
 			// Published ids are globally unique by validation (host ids
-			// unique, segments unique per host); first-writer is enough.
+			// unique, server ids unique per host); first-writer is enough.
 			if _, dup := t.routes[pub]; !dup {
 				t.routes[pub] = &Target{Published: pub, Base: base, HostID: st.HostID, ServerID: st.ServerID, State: st}
 			}
