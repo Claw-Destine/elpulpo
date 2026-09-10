@@ -9,7 +9,9 @@ import (
 // StatsPage: filters (period presets + custom range, AND-combined
 // multi-selects, model substring, group_by) above an htmx-polled fragment
 // with the grouped summary, the sortable/paginated rows table and the two
-// CSV export links — all carrying the current filters.
+// CSV export links — all carrying the current filters. The fragment answers
+// with HX-Push-Url, so the address bar keeps showing /dashboard/stats with
+// the current filters (never the fragment endpoint).
 templ StatsPage(d *Deps, csrf string, v StatsView) {
 	@Layout("Statistics", "stats", csrf, d, func() templ.Component { return StatsMain(v) })
 }
@@ -20,6 +22,8 @@ templ StatsMain(v StatsView) {
 	@StatsFragment(v)
 }
 
+// StatsFiltersForm drives the fragment; the pushed URL comes from the
+// fragment response (HX-Push-Url), so no hx-push-url here.
 templ StatsFiltersForm(v StatsView) {
 	<form
 		id="stats-form"
@@ -27,11 +31,10 @@ templ StatsFiltersForm(v StatsView) {
 		hx-get="/dashboard/part/stats"
 		hx-target="#stats-body"
 		hx-swap="outerHTML"
-		hx-push-url="true"
 	>
 		<label>
 			Period
-			<select name="period" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+			<select name="period" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-trigger="change">
 				<option value="all" selected={ v.Q.Period == "all" }>All time</option>
 				<option value="today" selected={ v.Q.Period == "today" }>Today</option>
 				<option value="month" selected={ v.Q.Period == "month" }>This month</option>
@@ -84,7 +87,7 @@ templ StatsFiltersForm(v StatsView) {
 		</label>
 		<label>
 			Group summary by
-			<select name="group_by" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+			<select name="group_by" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-trigger="change">
 				<option value="model" selected={ v.Q.GroupBy == "model" }>model</option>
 				<option value="host" selected={ v.Q.GroupBy == "host" }>host</option>
 				<option value="server" selected={ v.Q.GroupBy == "server" }>server</option>
@@ -93,7 +96,7 @@ templ StatsFiltersForm(v StatsView) {
 		</label>
 		<label>
 			Rows per page
-			<select name="page_size" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change">
+			<select name="page_size" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-trigger="change">
 				<option value="25" selected={ v.Q.PageSize == 25 }>25</option>
 				<option value="50" selected={ v.Q.PageSize == 50 }>50</option>
 				<option value="100" selected={ v.Q.PageSize == 100 }>100</option>
@@ -110,7 +113,7 @@ templ StatsFiltersForm(v StatsView) {
 templ StatsFragment(v StatsView) {
 	<div
 		id="stats-body"
-		hx-get={ "/dashboard/part/stats?" + v.Q.canon() }
+		hx-get={ v.Q.pollURL() }
 		hx-trigger="every 5s, elpulpo-changed from:body"
 		hx-swap="outerHTML"
 	>
@@ -259,13 +262,13 @@ templ StatsFragment(v StatsView) {
 		</table>
 		<div class="pager">
 			if v.Q.Page > 1 {
-				<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("page", fmtI(int64(v.Q.Page-1))) } hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true">← prev</a>
+				<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("page", fmtI(int64(v.Q.Page-1))) } hx-target="#stats-body" hx-swap="outerHTML">← prev</a>
 			}
 			<span class="muted">
 				page { fmtI(int64(v.Q.Page)) } / { fmtI(int64(v.Pages)) } — { fmtI(v.Total) } rows
 			</span>
 			if v.Q.Page < v.Pages {
-				<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("page", fmtI(int64(v.Q.Page+1))) } hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true">next →</a>
+				<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("page", fmtI(int64(v.Q.Page+1))) } hx-target="#stats-body" hx-swap="outerHTML">next →</a>
 			}
 		</div>
 	</div>
@@ -273,7 +276,7 @@ templ StatsFragment(v StatsView) {
 
 templ SortHeader(v StatsView, col, label string) {
 	<th>
-		<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("sort", col, "dir", v.Q.sortFor(col)) } hx-target="#stats-body" hx-swap="outerHTML" hx-push-url="true">{ label }{ sortMark(v, col) }</a>
+		<a href="#" hx-get={ "/dashboard/part/stats?" + v.Q.with("sort", col, "dir", v.Q.sortFor(col)) } hx-target="#stats-body" hx-swap="outerHTML">{ label }{ sortMark(v, col) }</a>
 	</th>
 }
 

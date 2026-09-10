@@ -52,6 +52,9 @@ local), `host`/`server`/`endpoint`/`status` repeatable exact filters,
 `page_size` (default 50), `sort` (table column, default `timestamp`),
 `dir=asc|desc` (default desc). Build a `usage.Filter` from these; the
 displayed totals must equal the sums over an exported CSV — one code path.
+`poll=1` is additionally accepted on the stats fragment as the self-refresh
+marker (see Pages): it is not a filter, so it is ignored by the query parser
+and never appears in a canonical query or an export link.
 
 ## Pages (templ; layout with nav Servers / Prices / Statistics / Settings)
 
@@ -80,7 +83,12 @@ scenario 42) and when `Store.LastErr() != ""` (scenario 39).
   sortable columns; estimated rows visually distinct; retention note when
   `retention_days > 0` ("history beyond N days is not available"); links to
   both CSV exports carrying the current filters. Fragment `GET /dashboard/part/stats`
-  re-rendered by htmx every 5 s.
+  re-rendered by htmx every 5 s. The fragment answers with `HX-Push-Url:
+  /dashboard/stats?<canonical query>`, so the address bar always shows the page
+  with the current filters — never the fragment endpoint (that header wins over
+  `hx-push-url`, which would push the raw request URL). The self-refresh URLs
+  (`every 5s` and `elpulpo-changed`) carry `poll=1` and push nothing: automatic
+  refreshes must not add history entries.
 - `GET /dashboard/settings` — every knob (durations as "30s" strings, size
   as "32MiB", `retention_days` int, `total_timeout` 0 = off) with
   `hx-post="/dashboard/action/settings/save"`; field errors re-rendered

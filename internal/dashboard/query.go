@@ -134,6 +134,24 @@ func (sq statsQuery) canon() string {
 	return v.Encode()
 }
 
+// statsPollParam marks the fragment request the stats body fires on its own
+// (the 5 s poll and the elpulpo-changed refresh). It is not a filter, so it
+// never reaches canon() or the exports; it only keeps automatic refreshes out
+// of the browser history.
+const statsPollParam = "poll"
+
+// pageURL is the address-bar URL of this view: htmx is told to show the page,
+// with the canonical query, never the fragment endpoint.
+func (sq statsQuery) pageURL() string {
+	return "/dashboard/stats?" + sq.canon()
+}
+
+// pollURL is the fragment URL of a self-refresh: the same canonical query,
+// marked so the server leaves the history alone.
+func (sq statsQuery) pollURL() string {
+	return "/dashboard/part/stats?" + statsPollParam + "=1&" + sq.canon()
+}
+
 // with returns the canonical query with overrides (pagination, sorting).
 func (sq statsQuery) with(kvs ...string) string {
 	v, _ := url.ParseQuery(sq.canon())

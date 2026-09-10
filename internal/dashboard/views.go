@@ -250,7 +250,16 @@ func (h *Handler) pageStats(w http.ResponseWriter, r *http.Request, csrf string)
 }
 
 func (h *Handler) partStats(w http.ResponseWriter, r *http.Request, csrf string) {
-	h.render(w, r, StatsFragment(h.statsView(r)))
+	v := h.statsView(r)
+	// htmx takes the address-bar URL from this header — it wins over
+	// hx-push-url, whose raw request URL would show the fragment endpoint.
+	// The header therefore names the page with the canonical query, and only
+	// for user-initiated refreshes: a self-refresh (marked with the poll
+	// param) must not add history entries.
+	if r.URL.Query().Get(statsPollParam) == "" {
+		w.Header().Set("HX-Push-Url", v.Q.pageURL())
+	}
+	h.render(w, r, StatsFragment(v))
 }
 
 // --- settings --------------------------------------------------------------------

@@ -1065,3 +1065,77 @@ func TestAcceptance_33_CatalogApplyWritesRates(t *testing.T) {
 		t.Fatal("gpt-4o is still listed as no price set")
 	}
 }
+
+// --- stats screen: the address bar stays on the page -------------------------
+
+// dashHXHeaders GETs a dashboard URL the way htmx does (HX-Request set) and
+// returns the response headers.
+func dashHXHeaders(t *testing.T, h *testutil.Harness, path string) http.Header {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, h.URL(path), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("HX-Request", "true")
+	resp, err := h.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET %s: status %d", path, resp.StatusCode)
+	}
+	return resp.Header.Clone()
+}
+
+// TestDashboard_StatsFragmentKeepsThePageURL: every filter, sort and page
+// change re-renders the fragment endpoint, yet the address bar must show the
+// page with the resulting filters — never /dashboard/part/stats — and the
+// 5 s self-refresh must not add history entries of its own.
+func TestDashboard_StatsFragmentKeepsThePageURL(t *testing.T) {
+	h := testutil.Start(t)
+	h.DrainWriter()
+
+	// A filter change: htmx is told to push the page URL, filters included.
+	push := dashHXHeaders(t, h, "/dashboard/part/stats?period=month&group_by=host&model=gpt").Get("HX-Push-Url")
+	if !strings.HasPrefix(push, "/dashboard/stats?") {
+		t.Fatalf("a filter change pushes %q, want /dashboard/stats?<filters>", push)
+	}
+	if strings.Contains(push, "/dashboard/part/") {
+		t.Fatalf("the pushed URL names the fragment endpoint: %q", push)
+	}
+	for _, want := range []string{"period=month", "group_by=host", "model=gpt"} {
+		if !strings.Contains(push, want) {
+			t.Fatalf("the pushed URL %q loses the filter %q", push, want)
+		}
+	}
+
+	// Sorting and paging behave the same way and keep every other filter.
+	push = dashHXHeaders(t, h, "/dashboard/part/stats?period=month&sort=tokens_in&dir=asc&page=2").Get("HX-Push-Url")
+	for _, want := range []string{"period=month", "sort=tokens_in", "dir=asc", "page=2"} {
+		if !strings.Contains(push, want) {
+			t.Fatalf("a sort/page change pushes %q, which loses %q", push, want)
+		}
+	}
+
+	// The pushed URL is a real page URL: it answers with the whole page, and
+	// the self-refresh it hands to the browser is marked as a poll.
+	st, html := h.Get(push)
+	if st != 200 {
+		t.Fatalf("GET %s: %d", push, st)
+	}
+	if !strings.Contains(html, "<h1>Statistics</h1>") {
+		t.Fatalf("the pushed URL is not the stats page:\n%s", html)
+	}
+	if !strings.Contains(html, `id="stats-body" hx-get="/dashboard/part/stats?poll=1`) {
+		t.Fatalf("the self-refresh of the rendered page is not marked as a poll:\n%s", html)
+	}
+	if strings.Contains(html, "hx-push-url") {
+		t.Fatal("hx-push-url is back: htmx would push the fragment endpoint again")
+	}
+
+	// The marked self-refresh answers without touching the history at all.
+	if got := dashHXHeaders(t, h, "/dashboard/part/stats?poll=1&period=month").Get("HX-Push-Url"); got != "" {
+		t.Fatalf("the 5 s self-refresh pushes %q, want no push at all", got)
+	}
+}
