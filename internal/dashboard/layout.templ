@@ -18,6 +18,7 @@ templ Layout(title, active, csrf string, d *Deps, content pageContent) {
 				<span class="brand">🐙 El Pulpo</span>
 				<nav>
 					<a href="/dashboard/servers" class={ navClass(active, "servers") }>Servers</a>
+					<a href="/dashboard/loadbalancer" class={ navClass(active, "loadbalancer") }>Load balancer</a>
 					<a href="/dashboard/prices" class={ navClass(active, "prices") }>Prices</a>
 					<a href="/dashboard/stats" class={ navClass(active, "stats") }>Statistics</a>
 					<a href="/dashboard/settings" class={ navClass(active, "settings") }>Settings</a>

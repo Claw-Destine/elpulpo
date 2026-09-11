@@ -37,6 +37,18 @@ prices:
         output: 1.00
         cached_input: 0.10
         reasoning_output: 1.00
+loadbalancer:
+    routes:
+    -   alias: Turbo
+        description: "Prefer the vllm port"
+        models:
+        -   model: qwen3.8:27b-vllm@minion1
+        -   model: gpt-oss:120b-vllm@minion1
+            cost: 3
+    -   alias: auto
+        models:
+        -   model: qwen3.8:27b-ollama@minion1
+            cost: 2.5
 `
 
 func parse(t *testing.T, src string) *config.Config {

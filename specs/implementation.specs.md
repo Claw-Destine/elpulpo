@@ -31,6 +31,7 @@ No web framework, no ORM, no code generator beyond `templ`. `database/sql` with 
 ```
 cmd/elpulpo/            main: flags, env, wiring, signals
 internal/config/        config document: load, validate, canonical save, file watch
+internal/balancer/      in-flight accounting and the route pick (cost-weighted least load)
 internal/proxy/         routing, rewrite, SSE pass-through, concurrency slot
 internal/health/        probe loop, address election, server state
 internal/usage/         repository, writer queue, queries, prune, CSV
@@ -41,18 +42,24 @@ internal/dashboard/     templ pages, htmx fragments, exports
 One seam worth keeping honest: `usage.Repo` is the only thing that speaks SQL. A Postgres driver stays
 additive as long as nothing above that interface emits SQL.
 
+The other seam is `balancer.Selector`: it reads the route catalogue `health` maintains and the
+in-flight registry, and answers one question — which member of this alias takes the next request. The
+proxy asks it, the dashboard renders what it says, and neither reimplements the policy.
+
 ## Configuration file
 
 - **Path** `ELPULPO_CONFIG` (default `./elpulpo.yaml`). A missing file is an empty configuration; the
   first save creates it.
 - **Canonical write.** Struct-driven marshal (never a `map[string]any`, whose key order drifts),
-  4-space indent, defaults materialised (`max_concurrency: 0`, `scheme: http` written out), hosts
-  sorted by `id`, servers by `id`, price entries by `model`. Then: temp file in the same directory →
-  `chmod 0600` → `fsync` → `os.Rename`. A crash mid-save leaves either the old file or the new one.
+  4-space indent, defaults materialised (`max_concurrency: 0`, `scheme: http`, a route member's
+  `cost: 1` written out), hosts sorted by `id`, servers by `id`, price entries by `model`, routes by
+  `alias` — but **route members keep their order**, because it is the preference order the balancer
+  reads. Then: temp file in the same directory → `chmod 0600` → `fsync` → `os.Rename`. A crash
+  mid-save leaves either the old file or the new one.
 - **Own writes are not external edits.** The known hash is updated before the watcher looks again, so
   a save is never reported back as a hand edit.
-- **An empty `prices` section is omitted**, not written as `prices: {}`, so a hosts-only config stays
-  readable (scenario 45).
+- **An empty `prices` or `loadbalancer` section is omitted**, not written as `prices: {}`, so a
+  hosts-only config stays readable (scenario 45).
 - **Watch** by polling `stat` every second and comparing a sha256 of the contents — no `fsnotify`
   dependency, and identical behaviour on bind mounts and overlay filesystems where inotify is
   unreliable. On change: parse → validate → apply (the same code path as a dashboard save, so
@@ -72,8 +79,15 @@ additive as long as nothing above that interface emits SQL.
    (`model`, `stream`, `stream_options`) are lifted into a struct and the remainder kept as
    `map[string]json.RawMessage`, re-emitted verbatim — tool schemas, multimodal payloads and any
    future OpenAI field survive untouched.
-3. Route on exact published id from the catalogue the health loop maintains; otherwise
-   `404 model_not_found` with the matching `reason`.
+3. Resolve the asked name: exact published id from the catalogue the health loop maintains, or — when
+   the name is a route alias of the live config document — the member `balancer.Selector` picks.
+   Otherwise `404 model_not_found` with the matching `reason` (`not_configured` for a name that is
+   neither, `not_available` for a known published id behind a dark server or an alias whose every
+   member is down). The published-id lookup goes first: a published id always carries `@` and an
+   alias never does, so the order needs no arbitration.
+3b. The chosen published id's in-flight counter is raised **at admission**, before the concurrency
+   slot, and released by the `defer` that spans the request: the next concurrent request must see
+   this one, or a burst would pile every request onto the same member.
 4. Rewrite `model` to the base model name; set `stream_options.include_usage` only when
    `stream: true` and the client omitted it. The outgoing `Authorization` header is the server's
    `auth_token`, never the client's proxy token — the inbound header is dropped before forwarding,
@@ -81,8 +95,9 @@ additive as long as nothing above that interface emits SQL.
 5. **Concurrency slot**: `select` over the per-server semaphore, `queue_timeout` and
    `r.Context().Done()`; a server that went down while queued yields `503`. The slot is released by a
    `defer` spanning the whole streamed body, which is what makes scenario 8 pass.
-6. The response `model` is rewritten to the published id — in the JSON body and in every SSE `data:`
-   frame containing `"model"`. Frames are read line-delimited; `event:`, comment lines and
+6. The response `model` is rewritten to the name the client asked for — its published id, or the
+   alias it balanced through — in the JSON body and in every SSE `data:` frame containing `"model"`.
+   Frames are read line-delimited; `event:`, comment lines and
    `data: [DONE]` pass through untouched; each frame is flushed as written. Nothing is buffered and
    the parse cost is confined to frames carrying that key.
 7. Usage comes from the last usage-bearing frame or body; absent usage means an estimate plus the
@@ -90,11 +105,14 @@ additive as long as nothing above that interface emits SQL.
 8. The row is handed to the writer queue, not to SQLite, from the request goroutine.
 9. The same terminal point logs exactly one `chat request` line: the row's host/server/model/status
    plus latency, `wait_ms` (time queued for a slot), token counts, `estimated`, and `ttft_ms` on
-   streams. `ERROR` on `upstream_error`/`upstream_timeout`, `INFO` otherwise. A request turned away
+   streams; a request that came through a route adds `route=<alias>`, so the row and the log name the
+   member that served and the name it was asked for. `ERROR` on `upstream_error`/`upstream_timeout`,
+   `INFO` otherwise. A request turned away
    before routing logs the same `msg` at `WARN` with `status=rejected` and a `reason` and writes no
    row (a 5xx among them is `ERROR` — that one is our failure), so one line always equals one
    row-or-rejection. `DEBUG` adds the routing decision (id → host/server/address, base name sent
-   upstream), the upstream's own response status, and each probe with its model count.
+   upstream; for an alias, the alias and the member it chose), the upstream's own response status,
+   and each probe with its model count.
 
 A per-server `http.Transport` keeps the idle pool and error surface from being shared across servers,
 with `DisableCompression: true` so bytes arrive as the upstream sent them.
@@ -127,6 +145,30 @@ the value in force never changes.
 check, every other `/v1` response carries `Access-Control-Allow-Origin: *`. It is attached to that mux
 only — the dashboard and `/api/*` muxes never see it, so the absence of CORS headers on the dashboard
 (scenario 44) is structural rather than a configuration choice.
+
+## Load balancing
+
+Two pieces, both small enough to read at once:
+
+- **`balancer.Registry`** — `map[published model id]int64` under a mutex, `Add(id, ±1)` and
+  `InFlight(id)`. An id at zero is deleted rather than kept, so the map holds only what is busy and
+  `Counts()` is cheap for the dashboard and `/api/loadbalancer`.
+- **`balancer.Selector`** — compiles one configured route against live state: for each member, its
+  cost, the registry's count, `Load = cost × count`, and its `*health.Target` when the route
+  catalogue has it *and* the server is `up` with an active address. `pick()` walks the members in
+  order and keeps the first strictly-lowest load, so an unavailable member is skipped, an idle route
+  lands on the first member (every load is 0, the tie-break is the order), and ties always go to the
+  earliest row.
+
+The selector reads `health.Manager.Route` rather than owning a catalogue: the route table is the
+health loop's, rebuilt under its own mutex on every probe, and duplicating it would put a second
+source of truth between a request and the address it goes to. `View(cfg)` compiles every route for
+the dashboard and marks the member `pick()` would choose; `Aliases(cfg)` is the same computation
+reduced to the serving routes, which is what `GET /v1/models` appends to the published ids.
+
+Nothing is precomputed per config apply: a route table is a handful of members, and compiling it per
+request (or per 5 s poll) keeps the numbers it decides on current instead of adding a cache to
+invalidate when health, config or in-flight state moves.
 
 ## Health and address election
 
@@ -260,7 +302,12 @@ stated expectation.
   `#servers-state` (the table) → `#servers-models` (published ids, from the route table the proxy
   routes with) → `#servers-config` (the forms and the YAML panel); the first two poll every 5s and
   the forms re-read after any mutation, which also re-seats the config hash the next save is guarded
-  with. `GET /dashboard/part/servers` serves them by `?scope=`.
+  with. `GET /dashboard/part/servers` serves them by `?scope=`. The Load balancer screen is the same
+  shape with two regions — `#lb-live` (per-member cost, in-flight count, resulting load, and where
+  the next request would go, on the same 5 s clock) and `#lb-config` (`?scope=forms`) — and its
+  member picker is a `<datalist>` of the published ids: a native dropdown of what the fleet offers
+  that still accepts a typed name, which is what keeps the screen JavaScript-free under
+  `default-src 'self'`.
 - A mutation answers `HX-Trigger: elpulpo-changed`. htmx dispatches it on the submitting form and the
   event bubbles, so the regions listen `elpulpo-changed from:body` — that is what reloads the table
   and the model list the moment a host, a server or an import is applied, in every open tab. The
@@ -332,8 +379,13 @@ reference including what a dashboard save does to hand-written comments, and how
   shared harness, `internal/testutil` — `Start(t)` boots the real app on an `httptest` listener
   with `health_interval=5s`/`probe_timeout=1s`, fake upstreams carry the knobs the Testing section
   lists, and `IssueCSRF/CSRFPost` drive dashboard mutations. Golden files: the canonical export is
-  pinned in `internal/config/testdata/canonical.golden`; validation text is asserted per violation
-  path. The 27/45/46 dashboard-route variants live beside the store-level tests.
+  pinned in `internal/config/testdata/canonical.golden` (routes included: route sort by lowercased
+  alias, member order verbatim, a materialised `cost: 1`); validation text is asserted per violation
+  path. The 27/45/46 dashboard-route variants live beside the store-level tests. The two new seams
+  have their own level: `internal/balancer` tests the policy on hand-built routes and the compiling
+  of a real route against a running `health.Manager` over two fake upstreams, and
+  `internal/dashboard/route_form_test.go` pins the flat route form — rows zipped by position, and a
+  row action landing on the row that was clicked even after that row was renamed.
 - **Injected settings**: duration settings are floored at 1s (see functional spec, interpretation
   12), so timeout scenarios run 1s settings against 2.5–4s fake stalls. The suite stays linear.
 - **`-tags live` smoke**: `acceptance/live_ollama_test.go` runs one chat against a real Ollama on
@@ -345,5 +397,13 @@ reference including what a dashboard save does to hand-written comments, and how
   the CSP forbids the inline JS that would move an id from preview to confirm; `prices/save` also
   accepts flat form fields beside `{"prices":…|null}` — one repeated field per column, **one value
   per table row**, zipped by position, so every row on screen is saved, never only the first;
-  `config/save` also takes a `yaml` form field; mutations answer an `HX-Trigger` header for htmx
+  `config/save` also takes a `yaml` form field and the `loadbalancer` section beside `hosts` and
+  `prices`; `route/save` takes either `{"route":{…}}` or the flat route form (`alias`,
+  `description`, one `model` and one `cost` per row, plus the clicked button's
+  `delete_member`/`move_up`/`move_down` carrying the **row's position** (never the model id: htmx
+  submits the edited inputs too, so an id-named action would aim at a row the operator has already
+  renamed and quietly do nothing), and `original_alias` to rename an existing route); mutations answer an `HX-Trigger` header for htmx
   refresh. CSRF, hash-guard, violation and stale-save outcomes are exactly as contracted.
+- **Route ordering is data, not display order**: the dashboard renders members in the configured
+  order because that order *is* the preference order, and `Normalize` sorts routes by alias while
+  deliberately leaving their members alone.

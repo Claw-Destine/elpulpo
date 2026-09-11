@@ -29,3 +29,16 @@ prices:
           output: 1
           cached_input: 0.1
           reasoning_output: 1
+loadbalancer:
+    routes:
+        - alias: auto
+          models:
+            - model: qwen3.8:27b-ollama@minion1
+              cost: 2.5
+        - alias: Turbo
+          description: Prefer the vllm port
+          models:
+            - model: qwen3.8:27b-vllm@minion1
+              cost: 1
+            - model: gpt-oss:120b-vllm@minion1
+              cost: 3

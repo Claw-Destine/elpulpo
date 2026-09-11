@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -42,12 +43,32 @@ type priceOut struct {
 }
 
 type docOut struct {
-	Hosts  []hostOut  `yaml:"hosts"`
-	Prices *pricesOut `yaml:"prices,omitempty"`
+	Hosts        []hostOut        `yaml:"hosts"`
+	Prices       *pricesOut       `yaml:"prices,omitempty"`
+	LoadBalancer *loadBalancerOut `yaml:"loadbalancer,omitempty"`
+}
+
+// The load-balancer section keeps its member order: it is the preference order
+// the balancer reads, so normalising may sort the routes but never their
+// members.
+type loadBalancerOut struct {
+	Routes []routeOut `yaml:"routes"`
+}
+
+type routeOut struct {
+	Alias       string      `yaml:"alias"`
+	Description string      `yaml:"description,omitempty"`
+	Models      []memberOut `yaml:"models"`
+}
+
+type memberOut struct {
+	Model string  `yaml:"model"`
+	Cost  float64 `yaml:"cost"`
 }
 
 // Normalize sorts hosts by id, servers by id within a host, price entries by
-// model and aliases alphabetically, so store and export agree on order.
+// model, aliases alphabetically and routes by alias, so store and export agree
+// on order. A route's members keep their order: it is the balancing preference.
 func Normalize(c *Config) {
 	sort.SliceStable(c.Hosts, func(i, j int) bool { return c.Hosts[i].ID < c.Hosts[j].ID })
 	for i := range c.Hosts {
@@ -60,6 +81,12 @@ func Normalize(c *Config) {
 		for i := range ms {
 			sort.Strings(ms[i].Aliases)
 		}
+	}
+	if c.LoadBalancer != nil {
+		rs := c.LoadBalancer.Routes
+		sort.SliceStable(rs, func(a, b int) bool {
+			return strings.ToLower(rs[a].Alias) < strings.ToLower(rs[b].Alias)
+		})
 	}
 }
 
@@ -104,6 +131,17 @@ func Canonical(c *Config) []byte {
 			})
 		}
 		out.Prices = p
+	}
+	if c.LoadBalancer != nil && len(c.LoadBalancer.Routes) > 0 {
+		lb := &loadBalancerOut{}
+		for _, r := range c.LoadBalancer.Routes {
+			mo := make([]memberOut, 0, len(r.Members))
+			for _, m := range r.Members {
+				mo = append(mo, memberOut{Model: m.Model, Cost: m.CostOrDefault()})
+			}
+			lb.Routes = append(lb.Routes, routeOut{Alias: r.Alias, Description: r.Description, Models: mo})
+		}
+		out.LoadBalancer = lb
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

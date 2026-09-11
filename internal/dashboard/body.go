@@ -205,6 +205,17 @@ func cloneConfig(c *config.Config) *config.Config {
 		}
 		out.Prices = p
 	}
+	if c.LoadBalancer != nil {
+		lb := &config.LoadBalancer{}
+		for _, r := range c.LoadBalancer.Routes {
+			cr := config.Route{Alias: r.Alias, Description: r.Description}
+			for _, m := range r.Members {
+				cr.Members = append(cr.Members, config.RouteMember{Model: m.Model, Cost: copyFloat(m.Cost)})
+			}
+			lb.Routes = append(lb.Routes, cr)
+		}
+		out.LoadBalancer = lb
+	}
 	return out
 }
 

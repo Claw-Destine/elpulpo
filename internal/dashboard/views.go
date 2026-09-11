@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/a-h/templ"
 
 	"elpulpo/internal/catalog"
+	"elpulpo/internal/config"
 	"elpulpo/internal/health"
 	"elpulpo/internal/usage"
 )
@@ -184,6 +186,95 @@ func (h *Handler) pagePrices(w http.ResponseWriter, r *http.Request, csrf string
 
 func (h *Handler) partPrices(w http.ResponseWriter, r *http.Request, csrf string) {
 	h.render(w, r, PricesFragment(h.pricesView()))
+}
+
+// --- load balancer -------------------------------------------------------------
+
+// LBView is the Load Balancer screen: every configured route with its live
+// in-flight load, plus the published ids the member picker offers.
+type LBView struct {
+	Hash      string
+	Routes    []LBRouteView
+	Published []health.ModelView
+}
+
+type LBRouteView struct {
+	Alias       string         `json:"alias"`
+	Description string         `json:"description"`
+	Serving     bool           `json:"serving"` // at least one member can answer: the alias is in /v1/models
+	Members     []LBMemberView `json:"members"`
+}
+
+type LBMemberView struct {
+	Model     string `json:"model"`     // published id, with its postfix
+	Base      string `json:"base"`      // base model name, as the server knows it
+	HostID    string `json:"host"`      //
+	ServerID  string `json:"server"`    //
+	Cost      string `json:"cost"`      //
+	InFlight  int64  `json:"in_flight"` //
+	Load      string `json:"load"`      // cost × in flight — what the policy equalises
+	Available bool   `json:"available"`
+	Preferred bool   `json:"preferred"` // the member a request would go to if one arrived now
+	Upstream  string `json:"upstream"`  // where a request to this member goes right now
+}
+
+func fmtCost(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+// rowNumber labels a member row for its own buttons. They address the row by
+// position rather than by model id: htmx submits the edited inputs too, so a
+// button carrying the id the row used to hold would aim at a model that is no
+// longer there, and the click would silently do nothing.
+func rowNumber(i int) string { return strconv.Itoa(i) }
+
+func (h *Handler) lbView() LBView {
+	snap := h.d.Store.Current()
+	v := LBView{Hash: snap.FileHash, Published: h.d.Mgr.Models()}
+	// Both slices stay non-nil so /api/loadbalancer answers with [] rather than
+	// null when there is nothing to show — including when there is no balancer
+	// at all, which is why the guards sit before that early return.
+	if v.Published == nil {
+		v.Published = []health.ModelView{}
+	}
+	v.Routes = []LBRouteView{}
+	if h.d.Balancer == nil {
+		return v
+	}
+	for _, rt := range h.d.Balancer.View(snap.Config) {
+		rv := LBRouteView{Alias: rt.Alias, Description: rt.Description, Serving: rt.Serving()}
+		for _, m := range rt.Members {
+			mv := LBMemberView{
+				Model: m.Model, Cost: fmtCost(m.Cost), InFlight: m.InFlight,
+				Load: fmtCost(m.Load), Available: m.Available(), Preferred: m.Preferred,
+			}
+			if base, seg, hostID, ok := config.SplitPublishedID(m.Model); ok {
+				mv.Base, mv.ServerID, mv.HostID = base, seg, hostID
+			}
+			if m.Target != nil {
+				mv.Base, mv.HostID, mv.ServerID = m.Target.Base, m.Target.HostID, m.Target.ServerID
+				scheme, port, _, _ := m.Target.State.Routing()
+				if addr := m.Target.State.ActiveAddr(); addr != "" {
+					mv.Upstream = fmt.Sprintf("%s://%s:%d", scheme, addr, port)
+				}
+			}
+			rv.Members = append(rv.Members, mv)
+		}
+		v.Routes = append(v.Routes, rv)
+	}
+	return v
+}
+
+func (h *Handler) pageLoadBalancer(w http.ResponseWriter, r *http.Request, csrf string) {
+	h.render(w, r, LoadBalancerPage(h.d, csrf, h.lbView()))
+}
+
+func (h *Handler) partLoadBalancer(w http.ResponseWriter, r *http.Request, csrf string) {
+	v := h.lbView()
+	switch r.URL.Query().Get("scope") {
+	case "forms":
+		h.render(w, r, LoadBalancerFormsFragment(v))
+	default:
+		h.render(w, r, LoadBalancerLiveFragment(v))
+	}
 }
 
 // --- stats ---------------------------------------------------------------------

@@ -233,10 +233,11 @@ func (h *Harness) SaveConfigHTTPHash(cfg *config.Config, hash string) (int, stri
 	h.T.Helper()
 	doc := map[string]any{"hosts": []any{}, "h": hash}
 	var round struct {
-		Hosts  []config.Host  `yaml:"hosts"`
-		Prices *config.Prices `yaml:"prices,omitempty"`
+		Hosts        []config.Host        `yaml:"hosts"`
+		Prices       *config.Prices       `yaml:"prices,omitempty"`
+		LoadBalancer *config.LoadBalancer `yaml:"loadbalancer,omitempty"`
 	}
-	round.Hosts, round.Prices = cfg.Hosts, cfg.Prices
+	round.Hosts, round.Prices, round.LoadBalancer = cfg.Hosts, cfg.Prices, cfg.LoadBalancer
 	raw, err := yaml.Marshal(round)
 	if err != nil {
 		h.T.Fatalf("yaml: %v", err)
@@ -245,11 +246,10 @@ func (h *Harness) SaveConfigHTTPHash(cfg *config.Config, hash string) (int, stri
 	if err := yaml.Unmarshal(raw, &shape); err != nil {
 		h.T.Fatalf("yaml round-trip: %v", err)
 	}
-	if v, ok := shape["hosts"]; ok {
-		doc["hosts"] = v
-	}
-	if v, ok := shape["prices"]; ok {
-		doc["prices"] = v
+	for _, key := range []string{"hosts", "prices", "loadbalancer"} {
+		if v, ok := shape[key]; ok {
+			doc[key] = v
+		}
 	}
 	return h.CSRFPost("/dashboard/action/config/save", doc)
 }

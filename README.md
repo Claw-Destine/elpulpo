@@ -7,7 +7,8 @@ clients and your own inference boxes and does two jobs:
   monitor and analyse token usage and savings against cloud reference
   prices;
 - keeps the configuration of many LLM servers in one place, with one
-  model catalogue to name in your clients.
+  model catalogue to name in your clients — including load-balanced
+  aliases that spread one model across several machines.
 
 Clients address El Pulpo with the OpenAI chat API; El Pulpo rewrites the
 model field to the base name the serving process actually understands,
@@ -86,12 +87,23 @@ prices:
         output: 1.00
         cached_input: 0.10     # optional, falls back to input
         reasoning_output: 1.00 # optional, falls back to output
+loadbalancer:
+    routes:                  # optional section; an empty one is omitted
+    -   alias: qwen          # the id clients name in /v1/models
+        description: "Qwen on whichever box is freeest"
+        models:              # required, non-empty, in preference order
+        -   model: qwen3.8:27b-ollama@minion1   # published id, postfix and all
+            cost: 1          # what one in-flight connection here is worth
+        -   model: qwen3.8:27b-ollama@minion2
+            cost: 3          # the slow box is worth 3, so it takes a third as much
 ```
 
 Clients address servers by *published model id*
-(`<base-model>-<server-id>@<host-id>`); `GET /v1/models` lists
-exactly what you may request. Names come from the servers, not the
-config: a model is published because a healthy server reports it.
+(`<base-model>-<server-id>@<host-id>`), or by a route *alias* if you
+defined one; `GET /v1/models` lists exactly what you may request — the
+published ids of healthy servers plus the alias of every route that can
+answer. Names come from the servers, not the config: a model is
+published because a healthy server reports it.
 
 **Saving rewrites the file.** Every save — dashboard or import —
 serialises the live configuration canonically: sorted hosts and price
@@ -126,6 +138,13 @@ curl http://localhost:8080/v1/chat/completions -H "Authorization: Bearer $TOKEN"
   "messages": [{"role": "user", "content": "hello"}],
   "stream": true
 }'
+
+# or the load-balanced alias, if one is configured
+curl http://localhost:8080/v1/chat/completions -H "Authorization: Bearer $TOKEN" -d '{
+  "model": "qwen",
+  "messages": [{"role": "user", "content": "hello"}],
+  "stream": true
+}'
 ```
 
 The inbound `Authorization` carries the proxy token and is dropped
@@ -143,6 +162,35 @@ Health and routing are per server, per address: the first reachable
 address in preference order serves until it fails, then the next — with
 the switch logged and no fail-back. Three consecutive probe failures mark
 a server down (first success revives it).
+
+## Load balancing
+
+A route puts one requestable name in front of several published ids. Clients
+ask for the alias; El Pulpo picks the member. Each member carries a **cost** —
+what one in-flight connection to it is worth, small on a fast machine, large on
+a slow one — and the rule is simple:
+
+- **Nothing in flight?** The first model on the list serves, whatever its cost.
+- **Something already running?** The request goes to the member carrying the
+  **least in-flight cost** (`cost × connections running on it`), so the machines
+  converge on equal load. With costs 1 and 3 that means the fast box carries
+  three times as many connections before the loads meet — three times the
+  traffic.
+- **A member that cannot answer is skipped**, not retried: the route keeps
+  serving from the rest, and the alias leaves `GET /v1/models` only when the
+  last member goes dark.
+
+What counts as in flight is one admitted request until its response finishes —
+the whole stream, including any time it waits for a concurrency slot. The count
+is per published id, so traffic you send to an id directly is load every route
+containing it can see.
+
+Requests through an alias are recorded against the member that *served* them
+(prices and savings key off the model that actually ran), while the response
+still carries the alias you asked for, so a client-side cache keyed on model
+name stays coherent. An alias is a name you choose freely, and a price entry
+covering the same spelling changes nothing: routes are what makes a name
+requestable, price entries only price it.
 
 ## Logs
 
@@ -201,6 +249,14 @@ not a record of other people's typos.
   export, import with an added/removed/changed preview. A mutation reloads
   the table and the model list immediately; probe results (a server
   flipping, a model loaded or unloaded upstream) land on the 5-second poll.
+- **Load balancer** — the routes. The live panel shows each route with
+  whether its alias is in `GET /v1/models` right now and, per member, its
+  cost, requests in flight, the in-flight cost those add up to and the
+  member a request arriving now would go to; a member that cannot answer
+  is named as `withdrawn` rather than hidden. The editor adds, edits and
+  deletes routes: alias, description, and one row per model with a cost,
+  picked from a dropdown of the published ids or typed in, reordered one
+  step per click (the order is the preference order).
 - **Prices** — the document's price entries, base model names seen in
   usage that carry no price, and the read-only catalogue (~24 cloud
   models, embedded in the binary, `as_of`-labelled, stale after 180
@@ -241,9 +297,14 @@ and Settings screens state the limit while it is enabled.
 - `https` upstream servers are **not certificate-verified** (self-signed
   is the norm on inference boxes): anyone on the path can read that
   traffic and sees the forwarded `auth_token`.
-- No upstream retry once bytes reached the client, no pool/group
-  routing, no non-chat endpoints — the request vocabulary equals
-  `GET /v1/models`.
+- No upstream retry once bytes reached the client, and no retry before
+  them either: a request is aimed once, at one member of a route.
+  Balancing spreads the *choice*, not the failure — a machine that
+  answers `5xx` keeps answering `5xx`.
+- Route costs are declared, not measured: load is cost per in-flight
+  connection, so a long request and a short one weigh the same until a
+  measured signal replaces the static cost. No non-chat endpoints — the
+  request vocabulary equals `GET /v1/models`.
 
 ## Development
 

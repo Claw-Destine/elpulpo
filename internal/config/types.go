@@ -12,8 +12,9 @@ import (
 // Config is the whole configuration document: one YAML file is both the
 // store and the export format.
 type Config struct {
-	Hosts  []Host  `yaml:"hosts"`
-	Prices *Prices `yaml:"prices,omitempty"`
+	Hosts        []Host        `yaml:"hosts"`
+	Prices       *Prices       `yaml:"prices,omitempty"`
+	LoadBalancer *LoadBalancer `yaml:"loadbalancer,omitempty"`
 }
 
 // Host is one machine running one or more LLM servers, reachable under one
@@ -49,6 +50,42 @@ func (s Server) SchemeOrDefault() string {
 		return s.Scheme
 	}
 	return "http"
+}
+
+// LoadBalancer is the load-balancer section: the routes whose alias clients
+// address instead of a published model id. The whole section is optional.
+type LoadBalancer struct {
+	Routes []Route `yaml:"routes"`
+}
+
+// Route is one load-balanced alias: a name in GET /v1/models that resolves to
+// a ranked list of published model ids. Member order is the preference order —
+// the first member is the one that gets the request when nothing is in flight.
+type Route struct {
+	Alias       string        `yaml:"alias"`
+	Description string        `yaml:"description,omitempty"`
+	Members     []RouteMember `yaml:"models"`
+}
+
+// RouteMember is one published model id inside a route, with the cost one
+// in-flight connection to it is charged. Faster machines carry a smaller
+// cost, slower ones a larger one, so equalising the in-flight cost across the
+// members sends proportionally more traffic to the faster one.
+type RouteMember struct {
+	Model string   `yaml:"model"` // published id: <base>-<server-id>@<host-id>
+	Cost  *float64 `yaml:"cost,omitempty"`
+}
+
+// DefaultMemberCost is what a member with no explicit cost is charged: one
+// unit per in-flight connection, the same as every other member.
+const DefaultMemberCost = 1.0
+
+// CostOrDefault is the member's cost, defaulting to 1 when unset.
+func (m RouteMember) CostOrDefault() float64 {
+	if m.Cost == nil || *m.Cost <= 0 {
+		return DefaultMemberCost
+	}
+	return *m.Cost
 }
 
 // Prices is the reference-price section. The whole section is optional.
@@ -117,5 +154,26 @@ func NormalizeAddress(a string) string {
 
 // Empty reports whether the document carries nothing at all.
 func (c *Config) Empty() bool {
-	return len(c.Hosts) == 0 && (c.Prices == nil || len(c.Prices.Models) == 0)
+	return len(c.Hosts) == 0 &&
+		(c.Prices == nil || len(c.Prices.Models) == 0) &&
+		(c.LoadBalancer == nil || len(c.LoadBalancer.Routes) == 0)
+}
+
+// Routes returns the configured load-balancer routes, nil-safe.
+func (c *Config) Routes() []Route {
+	if c == nil || c.LoadBalancer == nil {
+		return nil
+	}
+	return c.LoadBalancer.Routes
+}
+
+// RouteFor finds the route whose alias equals the asked name. Lookup is exact:
+// the alias is a published name, and model ids are case-sensitive.
+func (c *Config) RouteFor(alias string) (*Route, bool) {
+	for i := range c.Routes() {
+		if c.LoadBalancer.Routes[i].Alias == alias {
+			return &c.LoadBalancer.Routes[i], true
+		}
+	}
+	return nil, false
 }

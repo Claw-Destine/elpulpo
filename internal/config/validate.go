@@ -48,6 +48,7 @@ type validator struct {
 	cfg    *Config
 	seenHI map[string][]Violation // host id (lowercased) -> first occurrence
 	seenAd map[string][]Violation // normalized address -> first occurrence
+	seenRT map[string][]Violation // route alias (lowercased) -> first occurrence
 	names  []nameClaim            // price model/alias claims
 }
 
@@ -94,12 +95,13 @@ func ParseAndValidate(data []byte) (*Config, []Violation) {
 		cfg:    &Config{},
 		seenHI: map[string][]Violation{},
 		seenAd: map[string][]Violation{},
+		seenRT: map[string][]Violation{},
 	}
 	if doc.Kind != yaml.MappingNode {
-		va.add("$", doc, "document must be a mapping with keys %q and %q", "hosts", "prices")
+		va.add("$", doc, "document must be a mapping with keys %q, %q and %q", "hosts", "prices", "loadbalancer")
 		return nil, va.v
 	}
-	var hostsN, pricesN *yaml.Node
+	var hostsN, pricesN, lbN *yaml.Node
 	for i := 0; i+1 < len(doc.Content); i += 2 {
 		k, vn := doc.Content[i], doc.Content[i+1]
 		switch k.Value {
@@ -107,6 +109,8 @@ func ParseAndValidate(data []byte) (*Config, []Violation) {
 			hostsN = vn
 		case "prices":
 			pricesN = vn
+		case "loadbalancer":
+			lbN = vn
 		default:
 			va.add("$", k, "unknown field %q", k.Value)
 		}
@@ -116,6 +120,11 @@ func ParseAndValidate(data []byte) (*Config, []Violation) {
 	}
 	if pricesN != nil {
 		va.prices(pricesN)
+	}
+	// After hosts: a route member names a server, so the host section has to
+	// be decoded before the members can be checked against it.
+	if lbN != nil {
+		va.loadbalancer(lbN)
 	}
 	// Cross-entry symmetry: report both occurrences of a duplicate name.
 	for i, a := range va.names {
@@ -483,6 +492,173 @@ func (va *validator) priceEntry(path string, n *yaml.Node) ModelPrice {
 		}
 	}
 	return mp
+}
+
+// --- load balancer -----------------------------------------------------------
+
+// knownServer reports whether the hosts section carries that server id on that
+// host, so a route member cannot name an endpoint that does not exist. Host
+// and server ids are matched the way routing matches them: case-sensitively.
+func (va *validator) knownHost(hostID string) bool {
+	for _, h := range va.cfg.Hosts {
+		if h.ID == hostID {
+			return true
+		}
+	}
+	return false
+}
+
+func (va *validator) knownServer(hostID, serverID string) bool {
+	for _, h := range va.cfg.Hosts {
+		if h.ID != hostID {
+			continue
+		}
+		for _, s := range h.Servers {
+			if s.ID == serverID {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+func (va *validator) loadbalancer(n *yaml.Node) {
+	const path = "loadbalancer"
+	if n.Kind == yaml.ScalarNode && n.Tag == "!!null" {
+		return // loadbalancer: (explicit null) == absent
+	}
+	if n.Kind != yaml.MappingNode {
+		va.add(path, n, "expected a mapping with key %q", "routes")
+		return
+	}
+	lb := &LoadBalancer{}
+	var routesN *yaml.Node
+	for _, kv := range mapEntries(n, path, va, map[string]bool{"routes": true}) {
+		switch kv[0].Value {
+		case "routes":
+			routesN = kv[1]
+		}
+	}
+	if routesN != nil {
+		if routesN.Kind != yaml.SequenceNode {
+			va.add(path+".routes", routesN, "expected a list of routes")
+		} else {
+			for i, rn := range routesN.Content {
+				rpath := fmt.Sprintf("%s.routes[%d]", path, i)
+				lb.Routes = append(lb.Routes, va.route(rpath, rn))
+			}
+		}
+	}
+	va.cfg.LoadBalancer = lb
+}
+
+func (va *validator) route(path string, n *yaml.Node) Route {
+	var r Route
+	if n.Kind != yaml.MappingNode {
+		va.add(path, n, "expected a route mapping")
+		return r
+	}
+	allowed := map[string]bool{"alias": true, "description": true, "models": true}
+	var aliasN, modelsN *yaml.Node
+	for _, kv := range mapEntries(n, path, va, allowed) {
+		switch kv[0].Value {
+		case "alias":
+			aliasN = kv[1]
+		case "description":
+			va.scalar(path+".description", kv[1], &r.Description)
+		case "models":
+			modelsN = kv[1]
+		}
+	}
+	if aliasN == nil {
+		va.add(path, n, "missing required field %q", "alias")
+	} else {
+		va.scalar(path+".alias", aliasN, &r.Alias)
+		if r.Alias == "" {
+			va.add(path+".alias", aliasN, "alias must not be empty")
+		} else if !AliasPattern.MatchString(r.Alias) {
+			// No '@' by construction, which is what keeps a route alias out of
+			// the published-id namespace (every published id carries one).
+			va.add(path+".alias", aliasN,
+				"route alias must match [A-Za-z0-9][A-Za-z0-9._:-]{0,63} and contain no %q, got %q", "@", r.Alias)
+		} else if prev, dup := va.seenRT[strings.ToLower(r.Alias)]; dup {
+			va.addMsg(path+".alias", aliasN, fmt.Sprintf("duplicate route alias %q (also at %s)", r.Alias, prev[0].Path))
+			va.v = append(va.v, Violation{Path: prev[0].Path, Line: prev[0].Line,
+				Msg: fmt.Sprintf("duplicate route alias %q (also at %s)", r.Alias, path+".alias")})
+		} else {
+			va.seenRT[strings.ToLower(r.Alias)] = []Violation{{Path: path + ".alias", Line: aliasN.Line}}
+		}
+	}
+	if modelsN == nil {
+		va.add(path, n, "missing required field %q", "models")
+	} else if modelsN.Kind != yaml.SequenceNode || len(modelsN.Content) == 0 {
+		va.add(path+".models", modelsN, "must be a non-empty list of member models")
+	} else {
+		seenModel := map[string]int{}
+		for i, mn := range modelsN.Content {
+			mpath := fmt.Sprintf("%s.models[%d]", path, i)
+			m := va.routeMember(mpath, mn)
+			if m.Model != "" {
+				if ln, dup := seenModel[m.Model]; dup {
+					va.addMsg(mpath+".model", mn, fmt.Sprintf("duplicate member model %q within this route (also at line %d)", m.Model, ln))
+				} else {
+					seenModel[m.Model] = mn.Line
+				}
+			}
+			r.Members = append(r.Members, m)
+		}
+	}
+	return r
+}
+
+func (va *validator) routeMember(path string, n *yaml.Node) RouteMember {
+	var m RouteMember
+	if n.Kind != yaml.MappingNode {
+		va.add(path, n, "expected a route member mapping")
+		return m
+	}
+	allowed := map[string]bool{"model": true, "cost": true}
+	var modelN *yaml.Node
+	for _, kv := range mapEntries(n, path, va, allowed) {
+		switch kv[0].Value {
+		case "model":
+			modelN = kv[1]
+		case "cost":
+			var f float64
+			if va.scalar(path+".cost", kv[1], &f) {
+				if f <= 0 {
+					va.add(path+".cost", kv[1], "cost must be greater than 0 (a unit cost of 1 is the default), got %v", f)
+				} else {
+					v := f
+					m.Cost = &v
+				}
+			}
+		}
+	}
+	if modelN == nil {
+		va.add(path, n, "missing required field %q", "model")
+	} else {
+		va.scalar(path+".model", modelN, &m.Model)
+		base, seg, hostID, ok := SplitPublishedID(m.Model)
+		switch {
+		case m.Model == "":
+			va.add(path+".model", modelN, "member model must not be empty")
+		case !ok || base == "":
+			va.add(path+".model", modelN,
+				"member model must be a published model id <base>-<server-id>@<host-id>, got %q", m.Model)
+		case !va.knownHost(hostID):
+			// Named apart from a missing server on purpose: the LB editor shows
+			// this on the member row, and "no server x on host y" when there is
+			// no host y at all sends the operator looking in the wrong place.
+			va.add(path+".model", modelN,
+				"no host %q in the hosts section — a route member must name a configured server", hostID)
+		case !va.knownServer(hostID, seg):
+			va.add(path+".model", modelN,
+				"no server %q on host %q in the hosts section — a route member must name a configured server", seg, hostID)
+		}
+	}
+	return m
 }
 
 func isISOCurrency(s string) bool {

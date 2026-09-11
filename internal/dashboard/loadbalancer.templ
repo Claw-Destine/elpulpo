@@ -1,0 +1,213 @@
+package dashboard
+
+// LoadBalancerPage: the routes that put one requestable name in front of
+// several published models. Two independent regions on their own refresh
+// clocks, like every other screen: the live load panel (5 s poll, so a request
+// in flight shows up on its own) and the editor (re-read after a mutation,
+// which also re-seats the config hash the next save is guarded with).
+templ LoadBalancerPage(d *Deps, csrf string, v LBView) {
+	@Layout("Load balancer", "loadbalancer", csrf, d, func() templ.Component { return LoadBalancerMain(v) })
+}
+
+templ LoadBalancerMain(v LBView) {
+	<h1>Load balancer</h1>
+	<p class="hint">
+		A route is an <strong>alias id</strong> clients address instead of a published model
+		<code>id</code>: it appears in <code>GET /v1/models</code> and resolves to a ranked list
+		of published models. Each member carries a <em>cost</em> — the load one in-flight
+		connection to it is worth, small on a fast machine, large on a slow one. An empty fleet
+		of connections sends the request to the <strong>first model on the list</strong>; once
+		something is in flight the request goes to whichever member carries the least
+		in-flight cost, so the machines converge on equal load and the cheap one takes more
+		traffic.
+	</p>
+	@LoadBalancerLiveFragment(v)
+	@LoadBalancerFormsFragment(v)
+}
+
+// LoadBalancerLiveFragment shows each route as the balancer sees it right now:
+// the in-flight connections per member, the cost they add up to, and the
+// member a request arriving at this instant would go to.
+templ LoadBalancerLiveFragment(v LBView) {
+	<div id="lb-live" hx-get="/dashboard/part/loadbalancer" hx-trigger="every 5s, elpulpo-changed from:body" hx-swap="outerHTML">
+		<h2>Routes in service</h2>
+		if len(v.Routes) == 0 {
+			<p class="muted">No routes yet — add one below to put a name in front of several models.</p>
+		}
+		for _, rt := range v.Routes {
+			<h3>
+				<code>{ rt.Alias }</code>
+				if rt.Serving {
+					<span class="up">in /v1/models</span>
+				} else {
+					<span class="down">not serving</span>
+					<span class="muted">— no member can answer, so the alias is withdrawn from the model list</span>
+				}
+			</h3>
+			if rt.Description != "" {
+				<p class="muted">{ rt.Description }</p>
+			}
+			<table class="grid">
+				<thead>
+					<tr>
+						<th class="num">#</th>
+						<th>Published model</th>
+						<th>Host</th>
+						<th>Server</th>
+						<th class="num">Cost</th>
+						<th class="num">In flight</th>
+						<th class="num">In-flight cost</th>
+						<th>Next request</th>
+						<th>Routed to</th>
+					</tr>
+				</thead>
+				<tbody>
+					for i, m := range rt.Members {
+						<tr>
+							<td class="num">{ fmtI(int64(i + 1)) }</td>
+							<td class="mono">{ m.Model }</td>
+							<td>{ m.HostID }</td>
+							<td>{ m.ServerID }</td>
+							<td class="num">{ m.Cost }</td>
+							<td class="num">{ fmtI(m.InFlight) }</td>
+							<td class="num">{ m.Load }</td>
+							<td>
+								if m.Preferred {
+									<span class="up">this one</span>
+								} else if !m.Available {
+									<span class="muted">—</span>
+								} else {
+									<span class="muted">not now</span>
+								}
+							</td>
+							<td class="mono">
+								if m.Upstream != "" {
+									{ m.Upstream }
+								} else {
+									<span class="down">withdrawn</span>
+								}
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	</div>
+}
+
+// LoadBalancerFormsFragment is the editor. Members are chosen from a
+// <datalist> of the ids the fleet publishes — pick one or type a name that is
+// not published yet; a cost field left empty means 1. Order is preference, and
+// with no JavaScript to drag rows, a row moves one step per click.
+templ LoadBalancerFormsFragment(v LBView) {
+	<div id="lb-config" hx-get="/dashboard/part/loadbalancer?scope=forms" hx-trigger="elpulpo-changed from:body" hx-swap="outerHTML">
+		<h2>Configure routes</h2>
+		<div id="lb-msg" class="msg" aria-live="polite"></div>
+		<datalist id="elpulpo-models">
+			for _, mdl := range v.Published {
+				<option value={ mdl.Published }></option>
+			}
+		</datalist>
+		if len(v.Routes) == 0 {
+			<p class="muted">No routes yet. The first one is below.</p>
+		}
+		for _, rt := range v.Routes {
+			<details class="host">
+				<summary>
+					<span class="mono">{ rt.Alias }</span>
+					if rt.Description != "" {
+						<span class="muted"> — { rt.Description }</span>
+					}
+				</summary>
+				<form hx-post="/dashboard/action/route/save" hx-target="#lb-msg">
+					<input type="hidden" name="h" value={ v.Hash }/>
+					<input type="hidden" name="original_alias" value={ rt.Alias }/>
+					<label>
+						Alias id — what clients name in /v1/models
+						<input name="alias" value={ rt.Alias }/>
+					</label>
+					<label>
+						Description
+						<input name="description" value={ rt.Description }/>
+					</label>
+					<table class="grid">
+						<thead>
+							<tr>
+								<th>Model — pick a published id or type it</th>
+								<th class="num">Cost</th>
+								<th>Order</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for i, m := range rt.Members {
+								<tr>
+									<td>
+										<input type="text" name="model" value={ m.Model } list="elpulpo-models" spellcheck="false"/>
+										if !m.Available {
+											<span class="down"> not answering now</span>
+										}
+									</td>
+									<td class="num"><input type="text" name="cost" value={ m.Cost } size="8"/></td>
+									<td class="nowrap">
+										<button type="submit" class="secondary" name="move_up" value={ rowNumber(i) }>up</button>
+										<button type="submit" class="secondary" name="move_down" value={ rowNumber(i) }>down</button>
+									</td>
+									<td>
+										<button type="submit" class="danger" name="delete_member" value={ rowNumber(i) } hx-confirm="Remove this model from the route?">Delete</button>
+									</td>
+								</tr>
+							}
+							<tr>
+								<td>
+									<input type="text" name="model" list="elpulpo-models" spellcheck="false" placeholder="(add model)"/>
+								</td>
+								<td class="num"><input type="text" name="cost" size="8" placeholder="1"/></td>
+								<td></td>
+								<td></td>
+							</tr>
+						</tbody>
+					</table>
+					<button type="submit">Save route</button>
+					<span class="hint">
+						Saving replaces this route: its models, their costs and their order (first
+						is preferred). up/down move a row one step, and a row with no model left in it
+						is not saved.
+					</span>
+				</form>
+				<form hx-post="/dashboard/action/route/delete" hx-target="#lb-msg" hx-confirm="Delete this route? Clients naming it will get 404.">
+					<input type="hidden" name="h" value={ v.Hash }/>
+					<input type="hidden" name="alias" value={ rt.Alias }/>
+					<button type="submit" class="danger">Delete route</button>
+				</form>
+			</details>
+		}
+		<details class="host">
+			<summary>Add route</summary>
+			<form hx-post="/dashboard/action/route/save" hx-target="#lb-msg">
+				<input type="hidden" name="h" value={ v.Hash }/>
+				<label>
+					Alias id<input name="alias" placeholder="qwen-fast"/></label>
+				<label>
+					Description<input name="description" placeholder="Qwen on whichever box is freeest"/></label>
+				<label>
+					First model — preferred when nothing is in flight
+					<input name="model" list="elpulpo-models" spellcheck="false" placeholder="qwen3.8:27b-ollama@minion1"/>
+				</label>
+				<label>
+					Cost of that model<input name="cost" value="1"/>
+				</label>
+				<button type="submit">Add route</button>
+				<span class="hint">
+					Add the other models on the route's own form once it exists. A cost of 1 on a
+					fast machine and 3 on a slow one sends three times as many concurrent
+					requests to the fast one.
+				</span>
+			</form>
+		</details>
+		<p class="hint">
+			A route member must name a server that exists in <em>Servers</em>; deleting a host or
+			server a route still names is refused until the route is fixed.
+		</p>
+	</div>
+}

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"sync"
 
+	"elpulpo/internal/balancer"
 	"elpulpo/internal/catalog"
 	"elpulpo/internal/config"
 	"elpulpo/internal/health"
@@ -38,7 +39,11 @@ type Deps struct {
 	Repo      *usage.Repo
 	Writer    *usage.Writer
 	Catalogue *catalog.Catalogue
-	Open      OpenInfo
+	// Balancer compiles the configured routes against live health and
+	// in-flight state; Inflight is the counter set it reads.
+	Balancer *balancer.Selector
+	Inflight *balancer.Registry
+	Open     OpenInfo
 	// Prune runs the retention prune immediately (wired to App.PruneNow).
 	Prune func() (int64, error)
 	Log   *slog.Logger
@@ -82,12 +87,14 @@ func (h *Handler) Registered() http.Handler {
 	mux.HandleFunc("GET /dashboard/{$}", h.redirectHome)
 	mux.HandleFunc("GET /dashboard/servers", h.page(h.pageServers))
 	mux.HandleFunc("GET /dashboard/prices", h.page(h.pagePrices))
+	mux.HandleFunc("GET /dashboard/loadbalancer", h.page(h.pageLoadBalancer))
 	mux.HandleFunc("GET /dashboard/stats", h.page(h.pageStats))
 	mux.HandleFunc("GET /dashboard/settings", h.page(h.pageSettings))
 
 	// htmx fragments.
 	mux.HandleFunc("GET /dashboard/part/servers", h.part(h.partServers))
 	mux.HandleFunc("GET /dashboard/part/prices", h.part(h.partPrices))
+	mux.HandleFunc("GET /dashboard/part/loadbalancer", h.part(h.partLoadBalancer))
 	mux.HandleFunc("GET /dashboard/part/stats", h.part(h.partStats))
 	mux.HandleFunc("GET /dashboard/part/settings", h.part(h.partSettings))
 
@@ -100,7 +107,8 @@ func (h *Handler) Registered() http.Handler {
 	for _, action := range []string{
 		"config/save", "config/import", "config/import/apply",
 		"host/save", "host/delete", "server/save", "server/delete",
-		"prices/save", "catalog/apply", "settings/save", "prune/run",
+		"prices/save", "catalog/apply", "route/save", "route/delete",
+		"settings/save", "prune/run",
 	} {
 		mux.HandleFunc("POST /dashboard/action/"+action, h.routeAction)
 	}
@@ -112,6 +120,7 @@ func (h *Handler) Registered() http.Handler {
 	mux.HandleFunc("GET /api/config", h.apiConfig)
 	mux.HandleFunc("GET /api/settings", h.apiSettings)
 	mux.HandleFunc("GET /api/servers", h.apiServers)
+	mux.HandleFunc("GET /api/loadbalancer", h.apiLoadBalancer)
 	mux.HandleFunc("GET /api/usage/rows", h.apiUsageRows)
 	mux.HandleFunc("GET /api/usage/summary", h.apiUsageSummary)
 	mux.HandleFunc("GET /api/catalogue", h.apiCatalogue)

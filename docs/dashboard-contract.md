@@ -13,7 +13,8 @@ This document is the binding API contract between `internal/app` and
   the dashboard adds **no CORS headers ever** (scenario 44 is structural).
 - `Deps{Store *config.Store, Settings *config.SettingsManager, Mgr
   *health.Manager, Repo *usage.Repo, Writer *usage.Writer, Catalogue
-  *catalog.Catalogue, Open OpenInfo, Prune func() (int64,error), Log
+  *catalog.Catalogue, Balancer *balancer.Selector, Inflight
+  *balancer.Registry, Open OpenInfo, Prune func() (int64,error), Log
   *slog.Logger}`
 
 Key APIs to use:
@@ -30,6 +31,8 @@ Settings.Update(ctx, patch map[string]string) (*config.Settings, []config.Violat
 Repo.Rows / Count / Totals / Summary / WriteRowsCSV / WriteSummaryCSV / Distinct
 usage.NewPriceIndex(cfg.Prices) / ix.Lookup / usage.AmountTokens
 Catalogue.File.Catalogue.{Version,AsOf,Currency,Rates}, Catalogue.Stale, Catalogue.Match(name)
+balancer.Selector.View(cfg) []balancer.Route   // per member: Cost, InFlight, Load, Target, Preferred
+balancer.Registry.Counts() map[string]int64    // in-flight per published id
 ```
 
 ## CSRF + auth marker
@@ -56,7 +59,7 @@ displayed totals must equal the sums over an exported CSV — one code path.
 marker (see Pages): it is not a filter, so it is ignored by the query parser
 and never appears in a canonical query or an export link.
 
-## Pages (templ; layout with nav Servers / Prices / Statistics / Settings)
+## Pages (templ; layout with nav Servers / Load balancer / Prices / Statistics / Settings)
 
 CSP is `default-src 'self'` — **no inline JS anywhere**, behaviour via htmx
 attributes only. Assets (embedded via `go:embed`):
@@ -70,7 +73,17 @@ scenario 42) and when `Store.LastErr() != ""` (scenario 39).
   up/down, `active_address` flagged when a fallback (not first configured
   address), model count, in-flight, last probe, last error; add/edit/delete
   forms (see actions); YAML export link + import panel with
-  added/removed/changed preview + confirm. Refresh: `hx-get="/dashboard/part/servers"` `hx-trigger="every 5s"` `hx-swap="outerHTML"`.
+  added/removed/changed preview (hosts and load-balancer routes) + confirm. Refresh: `hx-get="/dashboard/part/servers"` `hx-trigger="every 5s"` `hx-swap="outerHTML"`.
+- `GET /dashboard/loadbalancer` — two regions: `#lb-live` lists every
+  configured route (alias, whether it is in `/v1/models` right now, then per
+  member: cost, in-flight requests, in-flight cost, where the next request
+  would go, upstream or `withdrawn`) polling every 5 s, and `#lb-config` the
+  editor. Members are picked from a `<datalist id="elpulpo-models">` of the
+  published ids and stay free-typed; a blank row adds a member, `delete_member`
+  removes one, `move_up`/`move_down` shift one step — the three buttons name
+  their row by position, not by model id, because the form posts the edited
+  inputs along with the click. Fragment
+  `GET /dashboard/part/loadbalancer` by `?scope=` ("" = live, `forms`).
 - `GET /dashboard/prices` — currency + entries (model, aliases, 4 rates);
   base model names in usage matching no entry listed as **no price set**
   (from `Repo.Summary` over all time, `NoPriceNames`); catalogue panel:
@@ -95,7 +108,7 @@ scenario 42) and when `Store.LastErr() != ""` (scenario 39).
   inline. Read-only env-credential display (`ELPULPO_PROXY_TOKEN`,
   `ELPULPO_DASHBOARD_USER/PASSWORD`: set/unset only — never values),
   warning when unset; "pruning is irreversible" note; "Run prune now" button.
-- Fragments: `GET /dashboard/part/servers|prices|stats|settings`.
+- Fragments: `GET /dashboard/part/servers|loadbalancer|prices|stats|settings`.
 
 ## Actions (POST; accept JSON body or form fields; JSON responses)
 
@@ -107,8 +120,8 @@ All config-mutating actions carry the live `FileHash` as field/param `h`
 
 | route | body | behaviour |
 | --- | --- | --- |
-| `/dashboard/action/config/save` | full config doc JSON (`hosts`, optional `prices`) + `h` | `Store.Save` |
-| `/dashboard/action/config/import` | `{"yaml": "..."}` | validate + preview `{"import_id","preview":{"added_hosts":[],"removed_hosts":[],"changed_hosts":[]}}` (compare vs live by canonical YAML per host); violations → 422, nothing staged |
+| `/dashboard/action/config/save` | full config doc JSON (`hosts`, optional `prices` and `loadbalancer`) + `h` | `Store.Save` |
+| `/dashboard/action/config/import` | `{"yaml": "..."}` | validate + preview `{"import_id","preview":{"added_hosts":[],"removed_hosts":[],"changed_hosts":[],"added_routes":[],"removed_routes":[],"changed_routes":[]}}` (compare vs live by canonical YAML per host, and per route by alias); violations → 422, nothing staged |
 | `/dashboard/action/config/import/apply` | `{"import_id","h"}` | apply staged import through the same save path (hash guard). Staged imports live in memory only |
 | `/dashboard/action/host/save` | `{"host":{...},"original_id":""}` + `h` | upsert host in live config, save |
 | `/dashboard/action/host/delete` | `{"id","h"}` | |
@@ -116,6 +129,8 @@ All config-mutating actions carry the live `FileHash` as field/param `h`
 | `/dashboard/action/server/delete` | `{"host_id","id","h"}` | |
 | `/dashboard/action/prices/save` | `{"prices":{"currency","models"} or null}` + `h` | replace prices section (null → drop section; canonical export then omits `prices`) |
 | `/dashboard/action/catalog/apply` | `{"model":"<base name>","overwrite":bool,"h"}` | see below |
+| `/dashboard/action/route/save` | `{"route":{"alias","description","models":[{"model","cost"}]},"original_alias":"","h"}` or the flat form fields | upsert route by `original_alias` (default: the new alias), replacing its members and their order; empty model rows are dropped; `delete_member`/`move_up`/`move_down` carry the row's **position** (a value that names no row is ignored, so a click from a stale screen changes nothing); validation runs on the whole document, so a member naming a server that does not exist is a 422 with the field path; a cost that is not a number at all is a 400 (as on Prices — structural rules are the 422 path) |
+| `/dashboard/action/route/delete` | `{"alias","h"}` | drop the route; unknown alias → 400 |
 | `/dashboard/action/settings/save` | settings fields (see `config.SettingsManager.Update`) | `Update`; violations → 422 |
 | `/dashboard/action/prune/run` | — | `Deps.Prune()` → `{"removed":N}`; retention off → 400 |
 
@@ -141,6 +156,11 @@ If a price entry already exists for that name (or its aliases) and
 - `/api/config` → `{"config":<doc>,"hash":"<FileHash>"}`
 - `/api/settings` → settings JSON + `{"open":{...}}` from `Deps.Open`
 - `/api/servers` → `Mgr.States()`
+- `/api/loadbalancer` → `{"routes":[{"alias","description","serving",
+  "members":[{"model","base","host","server","cost","in_flight","load",
+  "available","preferred","upstream"}…}]},"in_flight":{"<published id>":N}}`
+  (`cost`/`load` as their rendered text, `in_flight` as a count; the
+  `in_flight` map is the raw registry, keyed by published id)
 - `/api/usage/rows?<query>` → `{"rows":[...],"total":N,"page":P,"page_size":S,"totals":{...}}`
 - `/api/usage/summary?<query>` → `Repo.Summary` JSON (with `currency`,
   `no_price_models`, grand total)

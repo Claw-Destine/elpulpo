@@ -1,6 +1,6 @@
-// Package proxy is the client-facing OpenAI-compatible proxy: exact-id
-// routing, model rewrite in both directions, unbuffered SSE pass-through,
-// per-server concurrency slots and usage capture.
+// Package proxy is the client-facing OpenAI-compatible proxy: exact-id and
+// load-balancer routing, model rewrite in both directions, unbuffered SSE
+// pass-through, per-server concurrency slots and usage capture.
 package proxy
 
 import (
@@ -14,10 +14,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"elpulpo/internal/balancer"
 	"elpulpo/internal/config"
 	"elpulpo/internal/health"
 	"elpulpo/internal/usage"
@@ -26,7 +28,10 @@ import (
 // Deps wires the proxy to the live state.
 type Deps struct {
 	Settings *config.SettingsManager
+	Store    *config.Store // the live config document: its routes drive balancing
 	Health   *health.Manager
+	Balancer *balancer.Selector
+	Inflight *balancer.Registry
 	Writer   *usage.Writer
 	Log      *slog.Logger
 }
@@ -77,8 +82,49 @@ type call struct {
 	asked  string // model id exactly as the client spelled it
 	stream bool
 	target *health.Target // nil until routing has picked one
+	route  string         // load-balancer alias it came through, "" for a direct id
+	reply  string         // the model name the response carries: what was asked
 	waitMs int64          // time spent queued for a concurrency slot
 	err    error          // underlying failure, when there was one
+}
+
+// liveConfig is the config document a request routes against. In-flight
+// requests keep the snapshot they started with.
+func (p *Proxy) liveConfig() *config.Config {
+	if p.deps.Store == nil {
+		return &config.Config{}
+	}
+	return p.deps.Store.Current().Config
+}
+
+// resolve turns the asked model into exactly one target. A published id routes
+// to its own server as ever; a load-balancer alias routes to the member its
+// policy picks. The third result is the 404 reason when nothing resolved:
+// not_configured for a name El Pulpo has never heard of, not_available for one
+// it knows but cannot serve right now.
+func (p *Proxy) resolve(cfg *config.Config, asked string) (*health.Target, string, string) {
+	if t, ok := p.deps.Health.Route(asked); ok {
+		if !t.State.Up() || t.State.ActiveAddr() == "" {
+			return nil, "", "not_available" // known id behind a dark server
+		}
+		return t, "", ""
+	}
+	if _, isAlias := cfg.RouteFor(asked); isAlias {
+		if p.deps.Balancer == nil {
+			return nil, "", "not_available"
+		}
+		if _, member, ok := p.deps.Balancer.Resolve(cfg, asked); ok {
+			return member.Target, asked, ""
+		}
+		return nil, "", "not_available" // every member is down or unloaded
+	}
+	// A published id of a server that is currently dark is absent from the
+	// route table but known to the fleet: it is configured, just not
+	// answerable — the distinction scenario 3 depends on.
+	if p.deps.Health.Known(asked) {
+		return nil, "", "not_available"
+	}
+	return nil, "", "not_configured"
 }
 
 // rejected reports a request that ends without a usage row: turned away before
@@ -99,8 +145,10 @@ func (p *Proxy) rejected(c *call, httpStatus int, reason string, extra ...any) {
 	p.deps.Log.Warn("chat request", append(args, extra...)...)
 }
 
-// Models serves GET /v1/models: published ids of healthy servers only,
-// sorted, in OpenAI shape.
+// Models serves GET /v1/models: published ids of healthy servers plus the
+// load-balancer aliases that can answer right now, sorted, in OpenAI shape.
+// The list is the complete requestable vocabulary: every name in it is a name
+// POST /v1/chat/completions accepts.
 func (p *Proxy) Models(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		WriteError(w, http.StatusMethodNotAllowed, "unsupported_endpoint", "invalid_request_error",
@@ -116,11 +164,28 @@ func (p *Proxy) Models(w http.ResponseWriter, r *http.Request) {
 		Object string  `json:"object"`
 		Data   []model `json:"data"`
 	}{Object: "list", Data: []model{}}
-	for _, id := range p.deps.Health.ModelIDs() {
+	// A copy: ModelIDs hands out the route table's own slice, and appending to
+	// it would write into shared state.
+	base, aliases := p.deps.Health.ModelIDs(), p.routeAliases()
+	ids := make([]string, 0, len(base)+len(aliases))
+	ids = append(ids, base...)
+	ids = append(ids, aliases...)
+	sort.Strings(ids)
+	for _, id := range ids {
 		out.Data = append(out.Data, model{ID: id, Object: "model", OwnedBy: "elpulpo"})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// routeAliases are the load-balancer names to publish: an alias appears only
+// while at least one of its members can answer, so the list never carries a
+// name that would only ever answer 404.
+func (p *Proxy) routeAliases() []string {
+	if p.deps.Balancer == nil || p.deps.Store == nil {
+		return nil
+	}
+	return p.deps.Balancer.Aliases(p.deps.Store.Current().Config)
 }
 
 // Chat serves POST /v1/chat/completions.
@@ -190,34 +255,41 @@ func (p *Proxy) route(w http.ResponseWriter, r *http.Request, c *call, set *conf
 	}
 	c.asked = model
 
-	// 3. Route on exact published id. Routing is exact and single-target:
-	// the request vocabulary equals GET /v1/models — bare base names and
-	// aliases are unknown ids.
-	target, ok := p.deps.Health.Route(model)
-	if !ok {
-		reason := "not_configured"
-		if p.deps.Health.Known(model) {
-			reason = "not_available" // known id, server currently down
-		} else {
+	// 3. Route: an exact published id, or the member a load-balancer alias
+	// picks right now. The request vocabulary stays equal to GET /v1/models —
+	// the ids it lists and the aliases it lists are exactly the names that
+	// resolve here; a bare base model name is neither.
+	target, viaRoute, reason := p.resolve(p.liveConfig(), model)
+	if target == nil {
+		if reason == "not_configured" {
 			p.RejUnknown.Add(1)
 		}
 		p.rejected(c, http.StatusNotFound, reason)
 		WriteError(w, http.StatusNotFound, "model_not_found", "invalid_request_error",
-			fmt.Sprintf("model %q is not a published model id (reason: %s)", model, reason), reason)
-		return
-	}
-	st := target.State
-	if !st.Up() || st.ActiveAddr() == "" {
-		p.rejected(c, http.StatusNotFound, "not_available")
-		WriteError(w, http.StatusNotFound, "model_not_found", "invalid_request_error",
-			fmt.Sprintf("model %q is currently not available (reason: not_available), retry after the next health probe", model),
-			"not_available")
+			fmt.Sprintf("model %q is not a published model id or a load-balancer alias (reason: %s)", model, reason), reason)
 		return
 	}
 	c.target = target
-	p.deps.Log.Debug("routing request", "remote", c.remote, "asked", model,
-		"host", target.HostID, "server", target.ServerID, "base", target.Base,
-		"address", st.ActiveAddr(), "stream", stream)
+	c.route = viaRoute
+	c.reply = model // the client sees back the name it asked for
+	st := target.State
+	if viaRoute == "" {
+		p.deps.Log.Debug("routing request", "remote", c.remote, "asked", model,
+			"host", target.HostID, "server", target.ServerID, "base", target.Base,
+			"address", st.ActiveAddr(), "stream", stream)
+	}
+
+	// 3b. In-flight accounting for the balancer, taken at admission: the next
+	// concurrent request must see this one, or a burst would pile every
+	// request onto the same member. A request queued for a concurrency slot
+	// therefore counts — it has been aimed at that machine already.
+	p.deps.Inflight.Add(target.Published, 1)
+	defer p.deps.Inflight.Add(target.Published, -1)
+	if viaRoute != "" {
+		p.deps.Log.Debug("balancing request", "remote", c.remote, "alias", viaRoute,
+			"host", target.HostID, "server", target.ServerID, "base", target.Base,
+			"address", st.ActiveAddr(), "model", target.Published, "stream", stream)
+	}
 
 	// 4. Concurrency slot: select over the per-server FIFO semaphore, the
 	// queue timeout and the client context.
@@ -282,6 +354,10 @@ func (p *Proxy) finish(c *call, status string, httpStatus int,
 		"tokens_in", in, "tokens_out", out,
 		"tokens_cached", cached, "tokens_reasoning", reasoning,
 		"estimated", estimated,
+	}
+	if c.route != "" {
+		// Which member served it is the row; which alias asked is the route.
+		attrs = append(attrs, "route", c.route)
 	}
 	if ttft != nil {
 		attrs = append(attrs, "ttft_ms", *ttft)
@@ -493,12 +569,12 @@ func (p *Proxy) respondBuffered(w http.ResponseWriter, r *http.Request, c *call,
 	var u upstreamUsage
 	haveUsage := false
 	outChars := 0
-	// Response identity: the model field is rewritten back to the
-	// published id the client asked for.
+	// Response identity: the model field is rewritten back to the name the
+	// client asked for — its published id, or the alias it balanced through.
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(body, &doc) == nil && doc != nil {
 		if _, ok := doc["model"]; ok {
-			pub, _ := json.Marshal(t.Published)
+			pub, _ := json.Marshal(c.reply)
 			doc["model"] = pub
 			if nb, merr := json.Marshal(doc); merr == nil {
 				body = nb
@@ -659,7 +735,7 @@ func (p *Proxy) pumpStream(w http.ResponseWriter, r *http.Request, c *call,
 				}
 				ttft = &ms
 			}
-			frame := rewriteFrame(line, t.Published, &u, &haveUsage, &outChars)
+			frame := rewriteFrame(line, c.reply, &u, &haveUsage, &outChars)
 			if _, werr := w.Write(frame); werr != nil {
 				endStatus = usage.StatusCancelled
 				return

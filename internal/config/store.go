@@ -111,7 +111,7 @@ func (s *Store) Load() error {
 	}
 	Normalize(cfg)
 	s.apply(&Snapshot{Config: cfg, FileHash: hashBytes(b), Source: "startup", Applied: time.Now()})
-	s.log.Info("configuration loaded", "path", s.path, "hosts", len(cfg.Hosts))
+	s.log.Info("configuration loaded", "path", s.path, "hosts", len(cfg.Hosts), "routes", len(cfg.Routes()))
 	return nil
 }
 
@@ -273,5 +273,5 @@ func (s *Store) poll() {
 	}
 	Normalize(cfg)
 	s.apply(&Snapshot{Config: cfg, FileHash: h, Source: "file", Applied: time.Now()})
-	s.log.Info("configuration reloaded from hand edit", "path", s.path, "hosts", len(cfg.Hosts))
+	s.log.Info("configuration reloaded from hand edit", "path", s.path, "hosts", len(cfg.Hosts), "routes", len(cfg.Routes()))
 }

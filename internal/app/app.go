@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"elpulpo/internal/balancer"
 	"elpulpo/internal/catalog"
 	"elpulpo/internal/config"
 	"elpulpo/internal/dashboard"
@@ -63,6 +64,8 @@ type App struct {
 	Repo      *usage.Repo
 	Writer    *usage.Writer
 	Mgr       *health.Manager
+	Inflight  *balancer.Registry
+	Balancer  *balancer.Selector
 	Proxy     *proxy.Proxy
 	Catalogue *catalog.Catalogue
 
@@ -115,7 +118,15 @@ func New(opts Options, log *slog.Logger) (*App, error) {
 	a.writerCancel = cancel
 	go func() { a.Writer.Run(ctx); close(a.writerDone) }()
 
-	a.Proxy = proxy.New(proxy.Deps{Settings: a.Settings, Health: a.Mgr, Writer: a.Writer, Log: log})
+	// The balancer reads the route catalogue the health loop maintains and
+	// counts what is in flight, which is the quantity its policy equalises.
+	a.Inflight = balancer.NewRegistry()
+	a.Balancer = balancer.NewSelector(a.Mgr, a.Inflight)
+
+	a.Proxy = proxy.New(proxy.Deps{
+		Settings: a.Settings, Store: a.Store, Health: a.Mgr,
+		Balancer: a.Balancer, Inflight: a.Inflight, Writer: a.Writer, Log: log,
+	})
 
 	// Retention: pruning runs at startup and once a day when enabled.
 	go a.pruneLoop()
@@ -281,6 +292,8 @@ func (a *App) Handler() http.Handler {
 		Repo:      a.Repo,
 		Writer:    a.Writer,
 		Catalogue: a.Catalogue,
+		Balancer:  a.Balancer,
+		Inflight:  a.Inflight,
 		Open: dashboard.OpenInfo{
 			ProxyOpen:  a.Opts.ProxyToken == "",
 			ProxySet:   a.Opts.ProxyToken != "",

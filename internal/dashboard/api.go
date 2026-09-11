@@ -58,6 +58,21 @@ func (h *Handler) apiServers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, states)
 }
 
+// apiLoadBalancer reports every configured route with its live load: cost,
+// in-flight requests, the resulting load and the member a new request would go
+// to, plus the raw in-flight counts keyed by published id.
+func (h *Handler) apiLoadBalancer(w http.ResponseWriter, r *http.Request) {
+	v := h.lbView()
+	counts := map[string]int64{}
+	if h.d.Inflight != nil {
+		counts = h.d.Inflight.Counts()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"routes":    v.Routes,
+		"in_flight": counts,
+	})
+}
+
 func (h *Handler) apiUsageRows(w http.ResponseWriter, r *http.Request) {
 	sq := parseStatsQuery(r)
 	ctx := r.Context()

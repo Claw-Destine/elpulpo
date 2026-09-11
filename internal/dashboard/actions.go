@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -42,6 +43,10 @@ func (h *Handler) routeAction(w http.ResponseWriter, r *http.Request) {
 		h.actionPricesSave(w, r)
 	case "catalog/apply":
 		h.actionCatalogApply(w, r)
+	case "route/save":
+		h.actionRouteSave(w, r)
+	case "route/delete":
+		h.actionRouteDelete(w, r)
 	case "settings/save":
 		h.actionSettingsSave(w, r)
 	case "prune/run":
@@ -128,12 +133,15 @@ func (h *Handler) actionConfigSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := fields["hosts"]; !ok {
-		badRequest(w, errors.New(`body must carry the config document ("hosts", optional "prices", "h")`))
+		badRequest(w, errors.New(`body must carry the config document ("hosts", optional "prices" and "loadbalancer", "h")`))
 		return
 	}
 	doc := map[string]any{"hosts": jsonValue(fields["hosts"])}
 	if raw, ok := fields["prices"]; ok && strings.TrimSpace(raw) != "" {
 		doc["prices"] = jsonValue(raw)
+	}
+	if raw, ok := fields["loadbalancer"]; ok && strings.TrimSpace(raw) != "" {
+		doc["loadbalancer"] = jsonValue(raw)
 	}
 	yb, err := yaml.Marshal(doc)
 	if err != nil {
@@ -254,14 +262,58 @@ func previewImport(live, next *config.Config) map[string][]string {
 			removed = append(removed, id)
 		}
 	}
+	// Load-balancer routes travel with the document, so an import that only
+	// touched routes says what it changed instead of reporting nothing.
+	addedR, removedR, changedR := previewRoutes(live.Routes(), next.Routes())
 	sort.Strings(added)
 	sort.Strings(removed)
 	sort.Strings(changed)
+	sort.Strings(addedR)
+	sort.Strings(removedR)
+	sort.Strings(changedR)
 	return map[string][]string{
-		"added_hosts":   orEmpty(added),
-		"removed_hosts": orEmpty(removed),
-		"changed_hosts": orEmpty(changed),
+		"added_hosts":    orEmpty(added),
+		"removed_hosts":  orEmpty(removed),
+		"changed_hosts":  orEmpty(changed),
+		"added_routes":   orEmpty(addedR),
+		"removed_routes": orEmpty(removedR),
+		"changed_routes": orEmpty(changedR),
 	}
+}
+
+// previewRoutes compares routes by alias, on the canonical YAML of each route,
+// so a member reorder or a cost edit reads as a change.
+func previewRoutes(live, next []config.Route) (added, removed, changed []string) {
+	liveR := map[string]config.Route{}
+	for _, r := range live {
+		liveR[r.Alias] = r
+	}
+	nextR := map[string]config.Route{}
+	for _, r := range next {
+		nextR[r.Alias] = r
+	}
+	for alias, nr := range nextR {
+		lr, ok := liveR[alias]
+		if !ok {
+			added = append(added, alias)
+			continue
+		}
+		if routeCanonical(lr) != routeCanonical(nr) {
+			changed = append(changed, alias)
+		}
+	}
+	for alias := range liveR {
+		if _, ok := nextR[alias]; !ok {
+			removed = append(removed, alias)
+		}
+	}
+	return added, removed, changed
+}
+
+func routeCanonical(rt config.Route) string {
+	return string(config.Canonical(&config.Config{
+		LoadBalancer: &config.LoadBalancer{Routes: []config.Route{rt}},
+	}))
 }
 
 func orEmpty(s []string) []string {
@@ -651,6 +703,182 @@ func (h *Handler) actionCatalogApply(w http.ResponseWriter, r *http.Request) {
 		e := config.ModelPrice{Model: model}
 		apply(&e)
 		cfg.Prices.Models = append(cfg.Prices.Models, e)
+	})
+}
+
+// --- load-balancer routes ----------------------------------------------------
+
+// parseRouteFields builds one route from either the JSON shape
+// ({"route": {"alias","description","models":[…]}}) or the flat form the
+// dashboard renders: alias, description, and one `model` plus one `cost`
+// field per member row, zipped by position. A blank model row is the empty
+// "add member" row and is dropped. `delete_member`/`move_up`/`move_down`
+// carry the model id of the row their button was clicked on.
+func parseRouteFields(fields map[string]string) (config.Route, error) {
+	var rt config.Route
+	if raw, ok := fields["route"]; ok && strings.TrimSpace(raw) != "" {
+		if err := decodeDocJSON(raw, &rt); err != nil {
+			return rt, fmt.Errorf("route is not a valid route object: %w", err)
+		}
+		return rt, nil
+	}
+	rt.Alias = strings.TrimSpace(fieldStr(fields, "alias"))
+	rt.Description = fieldStr(fields, "description")
+	models := fieldAll(fields, "model")
+	costs := fieldAll(fields, "cost")
+	// One row per submitted model field, cost zipped by position — blank rows
+	// kept, because a row's buttons address it by position and have to land on
+	// the row the screen showed. Blanks are dropped after the row actions.
+	rows := make([]config.RouteMember, 0, len(models))
+	for i, m := range models {
+		row := config.RouteMember{Model: strings.TrimSpace(unquote(m))}
+		if row.Model != "" {
+			costText := ""
+			if i < len(costs) {
+				costText = unquote(costs[i])
+			}
+			c, ok := parseCost(costText)
+			if !ok {
+				return rt, fmt.Errorf("member %q: cost must be a number greater than 0", row.Model)
+			}
+			row.Cost = c
+		}
+		rows = append(rows, row)
+	}
+	// A button in the member table acts on the row it sits in.
+	if i, ok := rowIndex(fields, "delete_member", len(rows)); ok {
+		rows = append(rows[:i], rows[i+1:]...)
+	}
+	if i, ok := rowIndex(fields, "move_up", len(rows)); ok {
+		moveMember(rows, i, -1)
+	}
+	if i, ok := rowIndex(fields, "move_down", len(rows)); ok {
+		moveMember(rows, i, +1)
+	}
+	for _, m := range rows {
+		if m.Model == "" {
+			continue
+		}
+		rt.Members = append(rt.Members, m)
+	}
+	return rt, nil
+}
+
+// rowIndex reads the value a member row's button carries: the row's position
+// among the submitted rows. Absent means no button was clicked; a value that
+// names no row — a form from a screen that has since changed — means no action,
+// which is the only safe reading of a stale click.
+func rowIndex(fields map[string]string, name string, n int) (int, bool) {
+	s := strings.TrimSpace(fieldStr(fields, name))
+	if s == "" {
+		return 0, false
+	}
+	i, err := strconv.Atoi(s)
+	if err != nil || i < 0 || i >= n {
+		return 0, false
+	}
+	return i, true
+}
+
+// moveMember shifts row i one slot towards the front (delta -1) or the back
+// (+1). Preference order has no JavaScript to drag with, so a row moves by one
+// step per click, and a row already at an end stays put.
+func moveMember(ms []config.RouteMember, i, delta int) {
+	j := i + delta
+	if i < 0 || i >= len(ms) || j < 0 || j >= len(ms) {
+		return
+	}
+	ms[i], ms[j] = ms[j], ms[i]
+}
+
+// parseCost reads a cost field: absent or blank means the default of 1, which
+// the canonical form materialises on save.
+func parseCost(s string) (*float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, true
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 {
+		return nil, false
+	}
+	return &f, true
+}
+
+func (h *Handler) actionRouteSave(w http.ResponseWriter, r *http.Request) {
+	fields, err := bodyFields(r)
+	if err != nil {
+		badRequest(w, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+	route, err := parseRouteFields(fields)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	if route.Alias == "" {
+		badRequest(w, errors.New(`route needs an "alias"`))
+		return
+	}
+	original := strings.TrimSpace(fieldStr(fields, "original_alias"))
+	if original == "" {
+		original = route.Alias
+	}
+	hp := fieldStr(fields, "h")
+	h.saveCopy(w, hp, func(cfg *config.Config) {
+		if cfg.LoadBalancer == nil {
+			cfg.LoadBalancer = &config.LoadBalancer{}
+		}
+		idx := -1
+		for i, rt := range cfg.LoadBalancer.Routes {
+			if strings.EqualFold(rt.Alias, original) {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			cfg.LoadBalancer.Routes[idx] = route
+		} else {
+			cfg.LoadBalancer.Routes = append(cfg.LoadBalancer.Routes, route)
+		}
+	})
+}
+
+func (h *Handler) actionRouteDelete(w http.ResponseWriter, r *http.Request) {
+	fields, err := bodyFields(r)
+	if err != nil {
+		badRequest(w, fmt.Errorf("invalid body: %w", err))
+		return
+	}
+	alias := strings.TrimSpace(fieldStr(fields, "alias"))
+	hp := fieldStr(fields, "h")
+	if alias == "" {
+		badRequest(w, errors.New(`body must carry "alias"`))
+		return
+	}
+	found := false
+	for _, rt := range h.d.Store.Current().Config.Routes() {
+		if strings.EqualFold(rt.Alias, alias) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		badRequest(w, fmt.Errorf("route %q does not exist", alias))
+		return
+	}
+	h.saveCopy(w, hp, func(cfg *config.Config) {
+		if cfg.LoadBalancer == nil {
+			return
+		}
+		out := cfg.LoadBalancer.Routes[:0]
+		for _, rt := range cfg.LoadBalancer.Routes {
+			if strings.EqualFold(rt.Alias, alias) {
+				continue
+			}
+			out = append(out, rt)
+		}
+		cfg.LoadBalancer.Routes = out
 	})
 }
 

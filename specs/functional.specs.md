@@ -12,8 +12,13 @@ Covers **v1** only. Deferred items are listed in [Out of scope](#out-of-scope-v1
 | api | the adapter El Pulpo uses to talk to a server (model-list endpoint, chat endpoint, usage parsing) |
 | base model name | the model name as reported by the server, e.g. `qwen3.8:27b` |
 | published model id | `<base-model>-<server-id>@<host-id>` — the name clients address |
-| alias | an alternative name for a base model name, host-independent |
+| alias | an alternative name for a base model name, host-independent — **pricing only**, routable only when a route deliberately takes the same spelling |
 | price entry | the reference prices of one base model name, with its aliases |
+| route | a load-balancer entry: one requestable name standing in front of a ranked list of published model ids |
+| route alias | the `id` of a route — the name clients address and `GET /v1/models` lists; it carries no `@`, so it can never collide with a published model id |
+| route member | one published model id inside a route, with its cost |
+| cost | what one in-flight connection to a member is worth: small on a fast machine, large on a slow one |
+| in-flight cost | cost × the requests currently running on that published id — the quantity the balancer keeps equal |
 
 ## Proxy
 
@@ -57,6 +62,20 @@ prices:
         reasoning_output: 1.00 # optional — falls back to output
 ```
 
+Load balancing lives in the same document, as a third optional section of routes:
+
+```yaml
+loadbalancer:
+    routes:                       # optional section; an empty one is omitted on export
+    -   alias: qwen               # required — the id clients name in /v1/models
+        description: "Qwen on whichever box is freeest"   # optional
+        models:                   # required, non-empty, in preference order
+        -   model: qwen3.8:27b-ollama@minion1   # a published model id, postfix and all
+            cost: 1               # optional — units one in-flight connection costs; default 1
+        -   model: qwen3.8:27b-ollama@minion2
+            cost: 3               # the slow box is worth three, so it takes a third of the traffic
+```
+
 **Validation** — a save that violates any rule below is rejected with a field-level error and the
 currently live configuration stays in place:
 
@@ -79,6 +98,15 @@ currently live configuration stays in place:
   entries; each alias unique across the whole document and not equal to any other entry's `model` or
   alias, so price lookup is never ambiguous; aliases match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` (no
   `@`); all four prices are numbers ≥ 0.
+- load-balancer routes — **the whole `loadbalancer` section is optional**, and an empty one is
+  omitted on export like an empty `prices`. When present: route `alias` matches
+  `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` — the shape that keeps `@` out, which is what keeps a route
+  alias and a published model id from ever naming the same thing — and is unique across routes
+  (case-insensitive, so two clients can never disagree about which one they asked for); a route has
+  at least one member; a member's `model` is a published model id whose host **and** server id exist
+  in the `hosts` section (the base model name itself cannot be checked — names come from the
+  servers), and appears in that route only once; `cost` is a number > 0, omitted means 1.
+  Deleting a host or server a route still names is therefore refused until the route is fixed.
 
 Config changes apply within one health-check interval; requests already in flight finish against the
 configuration they started with.
@@ -90,10 +118,13 @@ same shape back. The config document is the hosts section and the prices section
 runtime state (health, active address, usage rows) and the global settings are not part of it.
 
 - **Export** materialises every field, including the ones left at their default, and orders hosts by
-  `id`, servers by `id` within a host and price entries by `model`, so two exports of the same config
-  are byte-identical and diffs between them are meaningful.
+  `id`, servers by `id` within a host, price entries by `model` and routes by `alias`, so two exports
+  of the same config are byte-identical and diffs between them are meaningful. A route's **members
+  keep their order** — it is the preference order the balancer reads, not an alphabet.
 - **Import replaces the whole configuration** — there is no merge. It is validated against every rule
-  in the list above before anything is applied.
+  in the list above before anything is applied. The preview names what it would add, remove or change,
+  hosts and load-balancer routes each under their own key — a document that only moved a member to
+  another route is a change, not a no-op.
 - A validation failure applies nothing and reports *all* violations, each with the path of the
   offending entry (`hosts[1].servers[0].api: unsupported adapter "anthropic"`).
 - A valid import is previewed as added / removed / changed hosts and servers, and only applied on
@@ -143,8 +174,43 @@ serving `qwen3.8:27b` + `gemma4:31b` on `minion1:11434`, `deepseek-v4-flash` on 
 
 The segment comes from the server `id` — the same name that labels the server on the dashboard and
 fills the `server` column of the usage rows now also addresses its models; `api` only selects the
-adapter. The same model on two hosts is **two distinct ids** and the client chooses one — there is
-no balancing between them.
+adapter. The same model on two hosts is **two distinct ids** and the client chooses one — unless a
+route puts both behind one name, which is what [Load balancing](#load-balancing) is for.
+
+### Load balancing
+
+A route gives a fleet one more requestable name. Its `alias` behaves exactly like a published model
+id from the client's side — it appears in `GET /v1/models`, is accepted by `POST
+/v1/chat/completions`, and is the name the response carries back — while behind it the request is
+aimed at one of the route's members:
+
+- **Publishing.** The alias is listed while at least one of its members can answer, and withdrawn as
+  soon as none can: the model list never carries a name that could only answer `404`. A member whose
+  model the server has not (yet) reported counts as unable to answer, so a route publishes as soon as
+  one of its models appears upstream.
+- **Choosing.** Among the members that can answer right now, the request goes to the one with the
+  **lowest in-flight cost** — `cost × requests currently running on that published id`. When nothing
+  is in flight every member's load is 0, so the tie-break decides, and the tie-break is the list
+  order: **the first model on the list serves an idle route**, whatever its cost. Ties are always
+  settled by the earliest row.
+- **Why that equalises.** With costs 1 and 3, the loads meet when the cheap machine carries three
+  times as many connections, which is the point: cost is what a connection to that box is worth
+  relative to the others, so equal load means the fast box absorbs more traffic.
+- **What counts as in flight.** A request is in flight from the moment it is admitted until it
+  finishes, so it covers the whole streamed response and every request that is waiting for a
+  concurrency slot. The count is kept **per published model id, not per route**: traffic aimed
+  directly at an id loads that id, and every route containing it sees that.
+- **Failure.** Members that cannot answer are skipped without a retry: a dark machine steps aside,
+  the route keeps serving from the rest, and the alias only leaves the model list when the last
+  member goes. The published id of a dark server still answers `404` `not_available` (see
+  [Client-facing API](#client-facing-api)); it is known, just not reachable.
+- **Recording.** The usage row names the **member that served** the request, never the alias, so
+  pricing and savings keep keying off the model that actually ran; the log line carries both
+  (`model=<published id>` and `route=<alias>`).
+
+A route is a routing decision, not a separate model: prices are keyed by the base model name of the
+member that served, and the pricing `aliases` of the `prices` section stay what they always were —
+name spellings for lookup, never routable.
 
 ### Adapters
 
@@ -185,26 +251,32 @@ One HTTP listener serves the proxy and the dashboard.
 
 | route | behaviour |
 | --- | --- |
-| `GET /v1/models` | OpenAI-shaped list of `published model id`s, from healthy servers only, sorted by id |
-| `POST /v1/chat/completions` | routed on exact match of `model` against a published id; forwarded to that one server with `model` replaced by the base model name |
+| `GET /v1/models` | OpenAI-shaped list of every requestable name, sorted: the published model ids of healthy servers **plus the alias of every route with at least one answerable member** |
+| `POST /v1/chat/completions` | routed on exact match of `model` against a published id, or against a route alias (which member serves is the balancer's choice); forwarded to that one server with `model` replaced by the base model name |
 | anything else | `404`, with `unsupported_endpoint` for valid OpenAI paths that v1 does not proxy (completions, embeddings, …) |
 
 There is no way to address a host or a server directly: the published model id is the only handle
 clients get, and every other path — including anything under `/servers/` — is a plain `404`.
 
-**Routing is exact and single-target.** In v1 there is no load balancing and no name resolution
-across hosts: a published id maps to exactly one server, and the bare base model name
-(`qwen3.8:27b`) is **not** accepted even when only one server offers it. **Aliases are not accepted
-as `model` values either** — they exist only to attach prices to names (see
-[Savings](#savings)), and a request for `qwen27` is an unknown id. Keeping the request vocabulary
-equal to `GET /v1/models` means a client can always discover every name that will work. A request for
-an id that is unknown returns `404 model_not_found` (`reason: not_configured`) and for a known id
-whose server is currently down `404 model_not_found` (`reason: not_available`, retry after the next
-health probe).
+**Routing resolves one name to one target.** A published id maps to exactly one server; a
+load-balancer alias maps to one of its members by the in-flight-cost policy
+([Load balancing](#load-balancing)). Both are exact: the bare base model name (`qwen3.8:27b`) is
+**not** accepted even when only one server offers it, and **pricing aliases are not accepted as
+`model` values either** — they exist only to attach prices to names (see
+[Savings](#savings)), and a request for `qwen27` is an unknown id. The one thing that can make such
+a name routable is a route *deliberately* given that alias: routes are part of the request
+vocabulary, price entries are not, and nothing is inferred from a price list. Keeping the request vocabulary
+equal to `GET /v1/models` — published ids plus the aliases of serving routes — means a client can
+always discover every name that will work. A request for a name that is neither returns
+`404 model_not_found` (`reason: not_configured`); for a published id whose server is currently down,
+or an alias whose every member is, `404 model_not_found` (`reason: not_available`, retry after the
+next health probe).
 
-**Response identity.** The `model` field of a routed response — in the JSON body and in every SSE
-chunk — is rewritten back to the published id the client asked for, so clients see what they
-requested and a client-side cache keyed on the model name stays coherent.
+**Response identity.** Wherever an upstream sends a `model` field — in the JSON body and in every SSE
+chunk — it is rewritten back to the name the client asked for, published id or alias, so clients see
+what they requested and a client-side cache keyed on the model name stays coherent. An upstream that
+sends no `model` at all leaves the proxy nothing to rewrite; the proxy does not invent the field. What
+actually served is visible in the log line and the usage row, never in the response.
 
 ### Streaming
 
@@ -291,6 +363,12 @@ address: each server independently remembers the one address it last reached, it
 `max_concurrency` caps in-flight requests per server (a slot is held for the whole streamed
 response). Excess requests queue FIFO and wait up to `queue_timeout` before `429`.
 `max_concurrency: 0` means unlimited, which is the default.
+
+The balancer's notion of in flight is **one request admitted to one published model id**, counted
+from admission until the response finishes — so a request queued for a slot is already load on the
+machine it was aimed at, and the per-server slot queue and the balancing view are deliberately
+different quantities. Both are shown on the dashboard: the Servers screen counts slots held per
+server, the Load balancer screen counts admitted requests per route member.
 
 ### Authentication
 
@@ -482,6 +560,17 @@ v1 screens, all acting on the live configuration without a restart:
   validation errors reported per field; YAML export download and import upload with the
   added/removed/changed preview. Any accepted mutation reloads the table and the model list in every
   open tab; a probe that changed a state or a model list is reflected on the next poll.
+- **Load balancer** — the `loadbalancer` section, in the same two-region shape. The live panel shows
+  each route with its alias, whether the alias is in `GET /v1/models` right now, and one row per
+  member: its cost, requests in flight, the in-flight cost those add up to, where a request would go
+  if one arrived this instant, and the upstream it resolves to — a member that cannot answer is
+  named as `withdrawn` rather than hidden, which is what explains where the traffic went. The editor
+  below adds, edits and deletes routes: alias, description, and one row per member with a **cost**
+  field and a model field that offers the published ids to pick from and still accepts a typed name;
+  members are added by the blank row, removed per row, and moved one step per click, because the
+  order is the preference order. Saves go through the same validation as every other screen, so a
+  member naming a server that does not exist is refused per field and the live routes stay as they
+  were.
 - **Prices** — the `prices` section of the same configuration: currency, entries per base model name
   with their aliases, the model names seen in usage that match no entry, and the bundled
   [price catalogue](#price-catalogue) offered against those names.
@@ -545,11 +634,23 @@ used throughout.
 | 46 | `health_interval: 1s`, or `max_request_size: 2GiB` | rejected with a field-level error naming the allowed range; the live values are unchanged |
 | 47 | a server removed, a host with a server added, and a YAML import applied — all through the dashboard | each mutation answers `HX-Trigger: elpulpo-changed` so the open Servers tab reloads its regions; the state table and the model list follow without a reload: the removed id is gone from both, the added id appears in both, and the imported-away host disappears from both |
 | 48 | the Servers screen is open, an upstream unloads one of its models and then stops answering altogether | within one interval the unloaded id is off the model list and out of the model count, and while the server is dark its remaining id stays on the list flagged `withdrawn` — the screen names the `404 not_available` instead of denying the model exists |
+| 49 | the Prices table is edited with several rows on screen and saved | every row on screen is saved, not only the first — repeated fields are zipped by position |
+| 50 | a route `qwen` covers the same model on two healthy hosts, costs 1 and 3 | `qwen` is in `GET /v1/models` beside the two published ids, a request aimed at it is served by the **first** member while nothing is in flight, the response carries `model: qwen`, the usage row names the serving published id and the log line names the route — and the published ids still route on their own |
+| 51 | eight concurrent held-open streams arrive for that route, nothing else in flight | they split 6 to the cost-1 member and 2 to the cost-3 one — the in-flight costs meet at 6 and 6 — the Load balancer screen shows those same numbers, and the in-flight count drains to zero when the streams finish |
+| 52 | the first member's server stops answering, then the second one does too | the alias stays published and serves from the surviving member (the withdrawn one still named on the Load balancer screen), the dark member's published id still answers `404 not_available`, and only when the last member is gone does the alias leave `GET /v1/models` and answer `404 not_available` itself — while a name that exists nowhere stays `not_configured` |
+| 53 | routes are built, reordered and emptied from the Load balancer screen | a member naming a server that does not exist is refused with the field path `loadbalancer.routes[i].models[j].model` and nothing is applied; a saved alias appears in `GET /v1/models` and the mutation answers `HX-Trigger: elpulpo-changed`; the member list shows the published ids to pick from; order is preference, one step per click (a row's buttons address it by position, so renaming a row and then moving or deleting it still acts on the row clicked); a rename replaces the route under its `original_alias` rather than adding a second one; a stale config hash is refused `409` and a missing CSRF token `403`, both with nothing written; the live feed is readable as JSON at `/api/loadbalancer`; deleting a member keeps the rest, emptying the route is refused, and deleting the route takes the name out of the model list again |
+| 54 | one request is aimed straight at a published id two routes both contain | the in-flight count is the model's, not the route's: both routes report that connection as load on their member and both step aside to their other member, though neither route saw the request |
+| 55 | one member's server serves a single request at a time (`max_concurrency: 1`) and a request queues for its slot | the queued request is already counted as load, so the next request goes to the other member instead of joining a queue behind a machine the balancer believes busy — the balancer's in-flight number and the server's slot count are deliberately different quantities |
 
 ## Out of scope (v1)
 
-**No load balancing and no pools — v1 routing is exact and single-target.** No failover across
-duplicate models, no named groups of published ids behind one requestable name ·
+**Load balancing covers one model on several machines.** A route ranks published ids and picks among
+the ones that can answer; what it does not do is **retry** — a request is aimed once, and a failure
+after that is the answer (retrying would have to prove no bytes reached the client) · no ranking of
+*different* models behind one name ("fast" vs "smart") · no weighting by queue depth, token count or
+measured latency, only the operator's static cost per member · no per-route concurrency cap
+(`max_concurrency` stays per server) · no name resolution beyond a published id or a route alias:
+a bare base model name is still unknown ·
 direct per-server routes and any other host/server passthrough · per-client API keys and
 per-client attribution in stats · embeddings endpoints · Ollama native `/api/chat`, `/api/generate`,
 `/api/embeddings` · Anthropic `/v1/messages` · response caching · multi-instance or HA deployments ·
@@ -565,19 +666,21 @@ retention pruning · import/export of the global settings · audit log of config
 
 Not requirements, and not v1. Kept here so the next round does not start from zero.
 
-**Pools** (named groups of published ids behind one requestable name) are where load balancing
-eventually lives. Four decisions to settle first: the naming grammar that keeps a pool id from
-colliding with a generated published id, and whether members stay individually requestable; selection
-policy among healthy members, and where failover retries stop — retrying is only legal before the
-first byte reaches the client; how a usage row records both the pool requested and the member that
-served it, since savings depend on the member's price; and whether `max_concurrency` stays per member
-or also applies pool-wide. A grouping of *different* models ("fast", "smart") is a separate feature
-needing its own ranking rules.
+**Route extensions.** Routes already settle the awkward parts of grouping: the naming grammar that
+keeps a route alias from colliding with a generated published id (no `@` in an alias), that a member
+stays individually requestable, that `GET /v1/models` lists the alias, and that savings key off the
+*serving* member. What remains open is the policy, not the plumbing:
 
-Whatever gets built must not disturb three v1 invariants: `GET /v1/models` stays the complete
-requestable vocabulary, so a pool must appear there; savings keep keying off the *serving* member's
-model name; and `host_addresses` election stays per server, below any pool — a pool never chooses an
-address. Aliases remain pricing-only, so a pool is the only routing indirection that can exist.
+- **Retry on failure.** Legal only before the first byte reaches the client, so it needs a rule for
+  where attempts stop and how the retries are recorded.
+- **Measured load instead of declared cost.** Queue depth, tokens in flight, or observed
+  tokens/second could replace the operator's static `cost`; the in-flight count is already per
+  published id, so a richer signal is additive.
+- **Grouping different models** behind one name needs ranking rules the cost model cannot express.
+- **Pool-wide concurrency**, if `max_concurrency` should ever cap a route and not just its servers.
+
+`host_addresses` election stays per server, below any route — a route never chooses an address.
+Pricing aliases remain pricing-only, so a route alias is the only routing indirection that exists.
 
 ## Interpretations taken during implementation (v1, as built)
 
@@ -621,3 +724,23 @@ follows, and the acceptance suite encodes these readings.
     `404 unsupported_endpoint`; everything else is a plain 404.
 15. **`ttft_ms` is never 0 once a first frame reached the client**: a sub-millisecond first byte is
     recorded as 1, so "streaming ⇒ `ttft_ms > 0`" holds without a timer artifact.
+16. **A route alias carries no `@`**, and every published model id always does (the host id is
+    mandatory), so the two name spaces cannot collide and the lookup order — published id first, then
+    alias — never has to arbitrate. A route alias may spell a name a price entry also covers (a base
+    model name or one of its pricing aliases), and there it wins: the alias is routable because a
+    route declares it, the price entry still only prices, and the amount is looked up off the member
+    that served. Rejecting the spelling instead would forbid the ordinary wish of making
+    `qwen3.8:27b` requestable across several boxes.
+17. **Cost is per connection, not per token.** A member's load is `cost × requests in flight`, which
+    is what "each in-flight connection will use unit of cost" means as built; a long request and a
+    short one weigh the same until a measured signal replaces the declared cost.
+18. **The in-flight count is per published model id, shared by every route that contains it** —
+    traffic aimed directly at an id is load the routes see too. Counting per route instead would let
+    one busy machine look idle to the second route pointing at it.
+19. **The pick is greedy on the current load, with ties settled by list order**, and admission is
+    counted before the concurrency slot is taken. That means a burst is balanced as it is admitted
+    rather than after the fact, and that two requests arriving in the same microsecond can still
+    choose the same member: the policy is a fair share, not a lock.
+20. **An empty route is invalid, so a route is deleted, not emptied** — the same rule that keeps a
+    `prices` section from being half-present. Deleting a host or server a route names is refused
+    until the route no longer names it, which is what keeps every saved member a routable name.
