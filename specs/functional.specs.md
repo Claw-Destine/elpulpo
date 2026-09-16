@@ -579,6 +579,19 @@ v1 screens, all acting on the live configuration without a restart:
   env-only credentials with the open-access warning when unset, and a note stating that retention
   pruning is irreversible while it is on.
 
+**Every answer is visible, and visible where it happened.** No screen may take a change from the
+operator and then say nothing. A save the validation rules refused leaves the live configuration
+untouched *and* names, under the button that was clicked, what it refused — each violation with the
+field path it belongs to; a document that changed on disk since the page was rendered; a page whose
+session marker has aged; a cost or a rate that is not a number. A save the server accepted says that
+in one line too, because silence after a success is indistinguishable from silence after a refusal.
+A message belongs to the form that earned it: a row's own button (delete a member, move a row, delete
+a price entry) answers inside that row, not at the top of a panel the operator has scrolled away
+from. An import's added/removed/changed preview is shown as the three lists it is, never as the
+document's JSON. And because what the operator cannot see is worse than what they can disagree with,
+a refresh that stops answering is named as well: the figures left on a screen that stopped reading
+are not the figures of right now, and they stay on screen saying so.
+
 ## Acceptance criteria (v1)
 
 The configuration from the [Model naming](#model-naming) example (hosts `minion1`, `minion2`) is
@@ -641,6 +654,7 @@ used throughout.
 | 53 | routes are built, reordered and emptied from the Load balancer screen | a member naming a server that does not exist is refused with the field path `loadbalancer.routes[i].models[j].model` and nothing is applied; a saved alias appears in `GET /v1/models` and the mutation answers `HX-Trigger: elpulpo-changed`; the member list shows the published ids to pick from; order is preference, one step per click (a row's buttons address it by position, so renaming a row and then moving or deleting it still acts on the row clicked); a rename replaces the route under its `original_alias` rather than adding a second one; a stale config hash is refused `409` and a missing CSRF token `403`, both with nothing written; the live feed is readable as JSON at `/api/loadbalancer`; deleting a member keeps the rest, emptying the route is refused, and deleting the route takes the name out of the model list again |
 | 54 | one request is aimed straight at a published id two routes both contain | the in-flight count is the model's, not the route's: both routes report that connection as load on their member and both step aside to their other member, though neither route saw the request |
 | 55 | one member's server serves a single request at a time (`max_concurrency: 1`) and a request queues for its slot | the queued request is already counted as load, so the next request goes to the other member instead of joining a queue behind a machine the balancer believes busy — the balancer's in-flight number and the server's slot count are deliberately different quantities |
+| 56 | a host, a server, a route, a price entry and a settings value are each refused by the rules, a mutation carries a hash that is no longer current, and one arrives without the CSRF marker | nothing is written and every one answers a 4xx carrying the text the operator is shown — `{"violations":[{"path","line","msg"}…]}` per field, or `{"error":"…"}` for a rule no field carries — never a `200` for a change that did not happen; the message is rendered under the button that was clicked, by the one same-origin script the pages link, and no screen carries inline JavaScript or an `hx-on:` attribute, so CSP stays `default-src 'self'` with neither `unsafe-inline` nor `unsafe-eval`; a form on screen never posts to an action that does not answer it |
 
 ## Out of scope (v1)
 

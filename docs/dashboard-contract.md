@@ -61,9 +61,22 @@ and never appears in a canonical query or an export link.
 
 ## Pages (templ; layout with nav Servers / Load balancer / Prices / Statistics / Settings)
 
-CSP is `default-src 'self'` — **no inline JS anywhere**, behaviour via htmx
-attributes only. Assets (embedded via `go:embed`):
-`/dashboard/static/htmx.min.js` (already vendored), `/dashboard/static/app.css`.
+CSP is `default-src 'self'` — **no inline JS anywhere** (an `hx-on:` attribute
+would need `unsafe-eval`, so behaviour never creeps into one). Behaviour is htmx
+attributes plus one same-origin script. Assets (embedded via `go:embed`):
+`/dashboard/static/htmx.min.js` (already vendored), `/dashboard/static/app.css`
+and `/dashboard/static/app.js`.
+
+That script exists because of one htmx rule: a response is swapped into its
+`hx-target` only when the status is 2xx/3xx, so every refused mutation
+(`400`/`403`/`409`/`422`) fired `htmx:responseError` and left the screen
+untouched — a save the server refused was indistinguishable from a button that
+does nothing. It issues no request of its own; it reads the answer htmx already
+holds (`htmx:afterRequest`, plus the form the event names) and writes it as
+`textContent` — never markup — into one node per form, placed immediately after
+the button that was clicked (inside the cell when it is a row's own button). The
+server contract and its status codes are unchanged: the refusal stays a 4xx with
+the same body, and the browser is told the truth about it.
 
 Persistent banner when `Open.ProxyOpen` or `Open.DashOpen` (every start,
 scenario 42) and when `Store.LastErr() != ""` (scenario 39).
@@ -117,6 +130,19 @@ All config-mutating actions carry the live `FileHash` as field/param `h`
 `200 {"ok":true,"hash":"<new>"}` · `422 {"violations":[{"path","line","msg"}]}` ·
 `409 {"error":"config changed on disk, reload first"}` (stale) ·
 `400/500 {"error":"..."}`.
+
+The screen shows all four, beside the control that earned them: the violations
+list one line each (`path: msg (line N)`), the error sentence as the server
+wrote it, `403` and `401` with the reload that is the only repair, and a success
+as one short line (`Host saved.`, `Pruned 12 usage rows.`) in place of the raw
+JSON htmx swapped into the `hx-target`. The import preview is the one success
+worth more than a line, so `#import-msg` gets it as readable text (hosts and
+routes added/changed/removed, `Nothing would change.` when that is the answer).
+Nothing is ever reported as saved that the server did not accept: a refusal
+keeps its 4xx, and the region is re-read only on the `HX-Trigger` a real save
+sends. A failing *read* — a poll or a stats query that answers 4xx/5xx — is a
+different thing from a refusal and says so where stale figures cannot be missed:
+one banner above the page, dropped as soon as that path answers again.
 
 | route | body | behaviour |
 | --- | --- | --- |

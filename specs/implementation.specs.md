@@ -289,8 +289,25 @@ stated expectation.
 `templ` pages under `/dashboard/*`, htmx fragments under `/dashboard/part/*`, mutations as
 `POST /dashboard/action/*`, exports at `/dashboard/export/{rows,summary}.csv`.
 
-- `CSP: default-src 'self'` — htmx drives behaviour through `hx-` attributes, so `unsafe-inline`
-  appears nowhere.
+- `CSP: default-src 'self'` — nothing inline: an `hx-on:` attribute is compiled with `new Function`,
+  which that policy refuses, so behaviour never creeps into an attribute. What runs is htmx plus one
+  same-origin script of our own (`/dashboard/static/app.js`, embedded like the stylesheet), and
+  `unsafe-inline` / `unsafe-eval` appear nowhere (scenario 56).
+- **A refusal is shown, and shown where it happened.** htmx swaps a response into its `hx-target`
+  only when the status is 2xx/3xx: a `400`/`403`/`409`/`422` from an action fires
+  `htmx:responseError` and changes nothing on screen, so before this script existed a save the
+  validation rules refused was indistinguishable from a button that does nothing. The script issues
+  no request of its own — it listens on `htmx:afterRequest`, takes the answer htmx already has, and
+  writes it as `textContent` (never markup, so a server sentence can never become HTML) into one node
+  per form, inserted immediately after the button that was clicked; a button living in a table cell
+  answers inside that cell, which is the row the operator meant. The actions keep their JSON and their
+  status codes: the browser is told the truth about the refusal, and only a real save, the one that
+  answers `HX-Trigger`, re-reads a region. Successes get a line each (`Host saved.`,
+  `Pruned 12 usage rows.`) in place of the raw `{"ok":true,…}` htmx had swapped into the shared
+  `.msg` div; the import preview, the one answer worth more than a line, is rendered as its
+  added/changed/removed lists. A failing *read* is a different animal: the polls keep the stale
+  figures on screen, so one banner above the page names the failure and leaves when that path answers
+  again.
 - **CSRF.** Basic auth is sent by the browser without a consent step, so mutating routes additionally
   require a header htmx sets globally plus a double-submit token in a `SameSite=Strict` cookie. No
   state ever changes on a `GET` (scenario 41).
@@ -306,7 +323,7 @@ stated expectation.
   shape with two regions — `#lb-live` (per-member cost, in-flight count, resulting load, and where
   the next request would go, on the same 5 s clock) and `#lb-config` (`?scope=forms`) — and its
   member picker is a `<datalist>` of the published ids: a native dropdown of what the fleet offers
-  that still accepts a typed name, which is what keeps the screen JavaScript-free under
+  that still accepts a typed name, which is why the screen needs no scripted widget of its own under
   `default-src 'self'`.
 - A mutation answers `HX-Trigger: elpulpo-changed`. htmx dispatches it on the submitting form and the
   event bubbles, so the regions listen `elpulpo-changed from:body` — that is what reloads the table
@@ -394,7 +411,8 @@ reference including what a dashboard save does to hand-written comments, and how
   v0.3.1001 and confirmed compiling against either. Regenerate with `make templ`.
 - **Dashboard deviations from the original build contract (all additive)**: `config/import/apply`
   also accepts `{"yaml","h"}` (re-posting the textarea) beside the staged `import_id` flow, because
-  the CSP forbids the inline JS that would move an id from preview to confirm; `prices/save` also
+  the CSP forbids the inline JS that would move an id from preview to confirm and the one script the
+  pages link carries no client state anyway (it issues no request of its own); `prices/save` also
   accepts flat form fields beside `{"prices":…|null}` — one repeated field per column, **one value
   per table row**, zipped by position, so every row on screen is saved, never only the first;
   `config/save` also takes a `yaml` form field and the `loadbalancer` section beside `hosts` and
@@ -404,6 +422,15 @@ reference including what a dashboard save does to hand-written comments, and how
   submits the edited inputs too, so an id-named action would aim at a row the operator has already
   renamed and quietly do nothing), and `original_alias` to rename an existing route); mutations answer an `HX-Trigger` header for htmx
   refresh. CSRF, hash-guard, violation and stale-save outcomes are exactly as contracted.
+- **The visible answer is a client of that contract, not a change to it.** What the actions answer is
+  unchanged in status and body; `acceptance/dashboard_errors_test.go` pins the two properties the
+  display rests on — every refusal the forms can reach answers its defined 4xx carrying a readable
+  `error` sentence or a `violations` list whose entries each have a path and a msg (never a `200` for
+  nothing written), and the screens link htmx plus `app.js` and nothing else, with no `on*=` handler
+  and no `hx-on:` anywhere, `unsafe-inline`/`unsafe-eval` still absent from the CSP, no fragment
+  loading a script of its own, and no form posting to an action that does not answer it. Which button
+  a message lands under is behaviour no Go test can observe; it was driven against a DOM stub out of
+  band rather than buying this one file a headless browser.
 - **Route ordering is data, not display order**: the dashboard renders members in the configured
   order because that order *is* the preference order, and `Normalize` sorts routes by alias while
   deliberately leaving their members alone.

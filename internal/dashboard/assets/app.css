@@ -178,6 +178,27 @@ details.host > summary, details.server > summary {
 
 .msg { min-height: 1.2rem; font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-word; }
 
+/* One form's own answer, written by app.js under the button that earned it:
+   htmx swaps 2xx bodies only, so a refused save (400 rule, 409 stale hash,
+   422 violations, 403 stale marker) never reaches a hx-target on its own.
+   It lives with the button, inside the form, so a re-read of the region takes
+   it away along with the form it belonged to. */
+.form-msg {
+	display: block;
+	margin: 0.25rem 0 0.2rem;
+	padding: 0.25rem 0.5rem;
+	max-width: 62rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--panel-2);
+	font-size: 0.85rem;
+	word-break: break-word;
+}
+
+.form-msg div + div { margin-top: 0.1rem; padding-left: 0.75rem; }
+.form-msg.error { background: var(--err-bg); color: var(--err-text); }
+.form-msg.ok { color: var(--up); }
+
 .filters {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

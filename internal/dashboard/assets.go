@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-//go:embed assets/htmx.min.js assets/app.css
+//go:embed assets/htmx.min.js assets/app.css assets/app.js
 var assetsFS embed.FS
 
 // serveAsset serves one embedded asset. Assets are same-origin under the

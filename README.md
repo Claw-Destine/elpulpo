@@ -271,6 +271,17 @@ not a record of other people's typos.
   everything; pruning is irreversible and logged), and the read-only
   credential state.
 
+Every screen answers you back. A save the validation rules refused leaves the
+configuration untouched and says so under the button you pressed — each field
+violation with the path it belongs to, a document that changed on disk since
+the page was drawn, a page whose session marker has aged, a cost or a rate that
+is not a number — and a save that worked says that in one line too, because
+silence after a success reads exactly like silence after a refusal. A row's own
+button (delete a member, move a row, delete a price entry) answers inside that
+row. When a refresh stops answering, the figures stay on screen under a banner
+saying they are stale: numbers you cannot question are worse than numbers you
+can disagree with.
+
 Estimated rows (upstreams that report no usage; character heuristic) are
 marked everywhere and flagged in totals.
 

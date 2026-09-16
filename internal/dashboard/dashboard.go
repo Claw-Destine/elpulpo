@@ -78,9 +78,11 @@ func New(d *Deps) *Handler {
 func (h *Handler) Registered() http.Handler {
 	mux := http.NewServeMux()
 
-	// Embedded static assets (same-origin only, no CORS ever).
+	// Embedded static assets (same-origin only, no CORS ever). app.js is the
+	// one script beyond htmx: it surfaces the answers htmx does not swap.
 	mux.HandleFunc("GET /dashboard/static/htmx.min.js", h.serveAsset("assets/htmx.min.js"))
 	mux.HandleFunc("GET /dashboard/static/app.css", h.serveAsset("assets/app.css"))
+	mux.HandleFunc("GET /dashboard/static/app.js", h.serveAsset("assets/app.js"))
 
 	// Pages (GET issues the CSRF cookie when absent).
 	mux.HandleFunc("GET /dashboard", h.redirectHome)
