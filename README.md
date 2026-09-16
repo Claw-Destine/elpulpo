@@ -27,15 +27,17 @@ Open `http://localhost:8080/dashboard/`, add a host, done. A missing
 ## Quick start — Docker
 
 ```sh
-docker build -t elpulpo .
+docker pull ghcr.io/claw-destine/elpulpo   # or build locally: docker build -t elpulpo .
 docker run -d --name elpulpo -p 8080:8080 \
   -v $PWD/config:/etc/elpulpo \
   -v elpulpo-data:/var/lib/elpulpo \
   -e ELPULPO_PROXY_TOKEN=$(openssl rand -hex 16) \
   -e ELPULPO_DASHBOARD_PASSWORD=$(openssl rand -hex 16) \
-  elpulpo
+  elpulpo                                  # or ghcr.io/claw-destine/elpulpo
 ```
 
+Published images are multi-arch (`linux/amd64`, `linux/arm64`), tagged
+by version (`:0.1.0`, `:0.1`, `:latest`), and pulled without login.
 The image is shell-less (`scratch`); its healthcheck runs
 `/elpulpo --health`, which probes the process's own `/healthz`.
 

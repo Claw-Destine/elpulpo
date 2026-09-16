@@ -6,7 +6,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/elpulpo ./cmd/elpulpo
+
+# Released images are stamped with the tag so that `elpulpo --version`
+# inside the container reports the version that is actually running.
+# Unstamped builds keep the source default, which says so in its name.
+ARG VERSION=v0.0.0-dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/elpulpo ./cmd/elpulpo
 
 # Pre-created, service-owned homes for the two mount points. Docker
 # initialises a fresh named volume from the image directory, ownership

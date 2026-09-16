@@ -1,0 +1,78 @@
+# Publishes the container image to GHCR on every version tag.
+#
+# ghcr.io is free for public images (unlimited storage and bandwidth) and
+# needs no credentials: the workflow authenticates with the automatic
+# GITHUB_TOKEN. Pulls of a *public* image need no login at all.
+#
+# After the very first push, set the package visibility to Public once:
+# Packages -> elpulpo -> Package settings -> Change visibility. A package
+# created by a workflow starts private even in a public repository, and
+# private means `docker pull` fails with "requested access to the
+# resource is denied".
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # manual rerun from the Actions tab, builds without pushing
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # The image is only published if the acceptance suite passes on the
+  # exact commit that is being released.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercase on purpose: the org is "Claw-Destine" but image
+      # references must be all lowercase.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/claw-destine/elpulpo
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # CGO_ENABLED=0 and modernc.org/sqlite cross-compile, so arm64
+          # (Raspberry Pi, Jetson, Apple Silicon) costs nothing but build
+          # time under emulation.
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'workflow_dispatch' }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Avoids the extra "unknown/unknown" attestation manifest entry
+          # on the tag; switch to true if you want SLSA provenance.
+          provenance: false
