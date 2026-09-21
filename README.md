@@ -14,6 +14,14 @@ Clients address El Pulpo with the OpenAI chat API; El Pulpo rewrites the
 model field to the base name the serving process actually understands,
 forwards the request, and streams the answer through unbuffered.
 
+![El Pulpo dashboard](assets/dashboard.gif)
+
+---
+
+Read more about the features:
+
+- [Relase 0.1.0 announcement](https://claw-destine.com/blog/002_elpulpo-release/)
+
 ## Quick start — binary
 
 ```sh
