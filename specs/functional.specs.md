@@ -409,6 +409,9 @@ as YAML.
 | `max_request_size` | 32 MiB | 1 KiB – 1 GiB | accepted proxy request body |
 | `queue_timeout` | 60s | 1s – 3600s | wait for a free `max_concurrency` slot |
 | `retention_days` | off (`0`) | off, or any positive integer | prune usage rows older than N days |
+| `debug_enabled` | off (`false`) | `true` / `false` | record contexts and responses (see [Request debugging](#request-debugging)) |
+| `debug_model` | every model (`""`) | a published id, an alias, or empty | restrict recordings to one model |
+| `debug_until` | no limit (`0`) | a deadline, unix milliseconds, or `0` | when the recording window closes itself |
 
 A value outside its range is rejected with a field-level error and the live value stays in force, as
 for a configuration save. Per-server `max_concurrency` takes `0` (unlimited) or any positive integer.
@@ -417,6 +420,43 @@ for a configuration save. Per-server `max_concurrency` takes `0` (unlimited) or 
 month`), custom ranges and all display happen in the timezone El Pulpo runs in. Containers default to
 UTC, so an operator wanting local-day statistics sets the container's `TZ`. Exported CSV stays UTC —
 a file is not a display.
+
+The two `debug_*` knobs are edited on the [Debug screen](#request-debugging), not on Settings.
+
+### Request debugging
+
+The Debug screen can turn El Pulpo into a recorder: while **debug mode** is on, every routed chat
+request is stored with **the context the client sent and the answer that came back**, so a model
+behaving strangely can be read about instead of guessed at. It is **off by default** and costs
+nothing when off: no capture, no write, an empty table. And turning it on is a decision with an
+end: recording runs inside a **time limit**, so a switch left behind cannot fill the database.
+
+- The switch, the optional **model filter** and the **window** live on the Debug screen and are
+  ordinary settings — they apply immediately and survive a restart. With a filter set (a published
+  id or a route alias), only requests whose model name matches — as asked, or as routed — are
+  recorded; with none, every routed request is.
+- The window is chosen when recording is turned on: **15 minutes** (the default), **1 hour**,
+  **1 day**, or — explicitly — no time limit. Past the deadline nothing is recorded, to the
+  millisecond, and the switch is reset by itself shortly after, so the screen reads honestly again.
+  Applying while recording is on restarts the window at its chosen length: one button extends a
+  session that needs more time or closes a long one early. The status line names the deadline and
+  the time left.
+- A recording keeps: when, the routing result (host/server, direct id or alias), whether it streamed,
+  the terminal status and HTTP status, latency, token counts, the **request body verbatim** and the
+  **response** — the upstream's own body for a buffered completion, the raw SSE frames for a stream.
+  A request that failed or was cut short is recorded too, with whatever answer reached El Pulpo; a
+  request rejected before routing is not recorded, because no model ever saw its context.
+- The writes never sit on the response path (a bounded queue drains to the database in the
+  background); when the queue is full the capture is dropped with an `ERROR`, never the request.
+  Each stored side is cut at a size cap so one recording cannot grow unbounded, and the table keeps
+  at most the newest thousand recordings — older ones are replaced. `retention_days` ages
+  recordings out with the usage rows. Clearing every recording is a button.
+- The screen lists the recordings (newest first) and shows the selected one in a pane with two view
+  modes: **messages** renders the context message by message — markdown text, structured content as
+  pretty JSON, embedded images shown inline, tool calls with their arguments — and reconstructs the
+  model's answer (stream deltas merged back into one message); **raw** shows the request and response
+  exactly as stored. A recording is read-only; the views show what was sent and answered, never
+  credentials.
 
 ## Token usage stats
 
@@ -486,6 +526,8 @@ The dashboard's statistics tab is a table of those rows, filterable and sortable
 
 - When set, pruning runs at startup and once a day, and logs how many rows it removed.
 - Pruning is irreversible and never touches reference prices, the configuration, or the exported CSVs.
+- [Debug recordings](#request-debugging) age with the usage rows: when retention is on, pruned
+  recordings go too. When it is off, the newest-thousand cap is what bounds them.
 - Aggregations and savings only ever see retained rows, so when retention is on the dashboard shows a
   note that history beyond N days is not available — older usage must not silently read as zero.
 - Row-level rollups are out of scope for v1: outside the window there is no data at all, not a daily
@@ -575,6 +617,10 @@ v1 screens, all acting on the live configuration without a restart:
   with their aliases, the model names seen in usage that match no entry, and the bundled
   [price catalogue](#price-catalogue) offered against those names.
 - **Statistics** — the table, grouped summary and both CSV exports described above.
+- **Debug** — the [request recorder](#request-debugging): the switch, its optional model filter and
+  its time limit on top, the list of recordings below (newest first, refreshing on its own), and the
+  selected recording in a pane to the right — its context and answer read as messages (markdown,
+  structured content as JSON, images inline) or as the raw request and response.
 - **Settings** — every knob from [Global settings](#global-settings); read-only display of the
   env-only credentials with the open-access warning when unset, and a note stating that retention
   pruning is irreversible while it is on.
@@ -655,6 +701,8 @@ used throughout.
 | 54 | one request is aimed straight at a published id two routes both contain | the in-flight count is the model's, not the route's: both routes report that connection as load on their member and both step aside to their other member, though neither route saw the request |
 | 55 | one member's server serves a single request at a time (`max_concurrency: 1`) and a request queues for its slot | the queued request is already counted as load, so the next request goes to the other member instead of joining a queue behind a machine the balancer believes busy — the balancer's in-flight number and the server's slot count are deliberately different quantities |
 | 56 | a host, a server, a route, a price entry and a settings value are each refused by the rules, a mutation carries a hash that is no longer current, and one arrives without the CSRF marker | nothing is written and every one answers a 4xx carrying the text the operator is shown — `{"violations":[{"path","line","msg"}…]}` per field, or `{"error":"…"}` for a rule no field carries — never a `200` for a change that did not happen; the message is rendered under the button that was clicked, by the one same-origin script the pages link, and no screen carries inline JavaScript or an `hx-on:` attribute, so CSP stays `default-src 'self'` with neither `unsafe-inline` nor `unsafe-eval`; a form on screen never posts to an action that does not answer it |
+| 57 | debug mode is switched on from the Debug screen — once with no filter, once filtered to one model — while buffered, streamed and filtered-out requests run against the fleet | with the switch off nothing is recorded; on, each selected request is stored with its context and its answer (the stream as its frames, merged back when read as messages), the filtered-out model stays unrecorded, and an alias routed to the filtered member is recorded; the screen lists the recordings and shows the selected one as messages (markdown, structured content as JSON, an embedded image rendered, tool calls shown) or raw; the switch and filter survive a restart; `clear` empties the recordings and nothing else; a markerless POST changes neither settings nor recordings |
+| 58 | debug mode is turned on with a time limit — by name, and once without naming one | an unnamed window defaults to the shortest offer (15 minutes) and an unknown duration is refused naming its field; inside the window requests are recorded and the status line names the deadline; past the deadline nothing is recorded, screen and API alike read off, and the switch resets itself shortly after; applying again restarts the window at its chosen length |
 
 ## Out of scope (v1)
 

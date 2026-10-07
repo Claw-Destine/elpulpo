@@ -3,6 +3,7 @@ package config_test
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -134,3 +135,97 @@ func TestGenerationBumps(t *testing.T) {
 		t.Fatal("unknown keys must not bump the generation")
 	}
 }
+
+func TestDebugSettings(t *testing.T) {
+	m, r := settingsMgr(t)
+	g := m.Get()
+	if g.DebugEnabled || g.DebugModel != "" {
+		t.Fatalf("debug mode must default off with no filter: %+v", g)
+	}
+
+	if _, v := m.Update(context.Background(), map[string]string{"debug_enabled": "true"}); len(v) > 0 {
+		t.Fatalf("on: %v", v)
+	}
+	if !m.Get().DebugEnabled {
+		t.Fatal("debug_enabled true not applied")
+	}
+	if _, v := m.Update(context.Background(), map[string]string{"debug_enabled": "banana"}); len(v) == 0 {
+		t.Fatal("debug_enabled must reject non-boolean text")
+	}
+	if _, v := m.Update(context.Background(), map[string]string{"debug_enabled": "off"}); len(v) > 0 {
+		t.Fatalf("off: %v", v)
+	}
+	if m.Get().DebugEnabled {
+		t.Fatal("off must disable")
+	}
+
+	// The filter names a model, and "" is a value: every model.
+	if _, v := m.Update(context.Background(), map[string]string{"debug_model": "alpha-s1@h1"}); len(v) > 0 {
+		t.Fatalf("filter: %v", v)
+	}
+	if m.Get().DebugModel != "alpha-s1@h1" {
+		t.Fatalf("filter not stored: %q", m.Get().DebugModel)
+	}
+	if _, v := m.Update(context.Background(), map[string]string{"debug_model": ""}); len(v) > 0 {
+		t.Fatalf("clearing the filter: %v", v)
+	}
+	if m.Get().DebugModel != "" {
+		t.Fatalf("empty must clear the filter, got %q", m.Get().DebugModel)
+	}
+
+	// Both survive a restart.
+	if _, v := m.Update(context.Background(), map[string]string{"debug_enabled": "true", "debug_model": "beta"}); len(v) > 0 {
+		t.Fatalf("pair: %v", v)
+	}
+	m2 := config.NewSettingsManager(r, nil)
+	if err := m2.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !m2.Get().DebugEnabled || m2.Get().DebugModel != "beta" {
+		t.Fatalf("debug settings did not survive reload: %+v", m2.Get())
+	}
+}
+
+func TestDebugOnHonoursWindow(t *testing.T) {
+	m, _ := settingsMgr(t)
+	now := time.Now()
+
+	// A window in the future keeps recording on; past it, off — no matter
+	// that the stored switch still says true.
+	if _, v := m.Update(context.Background(), map[string]string{
+		"debug_enabled": "true",
+		"debug_until":   itoa64(now.Add(15 * time.Minute).UnixMilli()),
+	}); len(v) > 0 {
+		t.Fatalf("open window: %v", v)
+	}
+	if !m.Get().DebugOn(now) {
+		t.Fatal("recording must be active inside its window")
+	}
+	if m.Get().DebugOn(now.Add(20 * time.Minute)) {
+		t.Fatal("recording must stop at the deadline")
+	}
+
+	// No deadline means it runs until switched off.
+	if _, v := m.Update(context.Background(), map[string]string{"debug_until": "0"}); len(v) > 0 {
+		t.Fatalf("no limit: %v", v)
+	}
+	if !m.Get().DebugOn(now.Add(365 * 24 * time.Hour)) {
+		t.Fatal("an unlimited window stays open")
+	}
+	if _, v := m.Update(context.Background(), map[string]string{"debug_enabled": "false"}); len(v) > 0 {
+		t.Fatalf("switch off: %v", v)
+	}
+	if m.Get().DebugOn(now) {
+		t.Fatal("off is off")
+	}
+
+	// The knob itself validates: non-negative integers only.
+	if _, v := m.Update(context.Background(), map[string]string{"debug_until": "-5"}); len(v) == 0 {
+		t.Fatal("a negative deadline must be refused")
+	}
+	if _, v := m.Update(context.Background(), map[string]string{"debug_until": "soon"}); len(v) == 0 {
+		t.Fatal("non-numeric deadline must be refused")
+	}
+}
+
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }

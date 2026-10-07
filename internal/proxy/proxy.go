@@ -1,6 +1,7 @@
 // Package proxy is the client-facing OpenAI-compatible proxy: exact-id and
 // load-balancer routing, model rewrite in both directions, unbuffered SSE
-// pass-through, per-server concurrency slots and usage capture.
+// pass-through, per-server concurrency slots, usage capture and — when debug
+// mode is on — recordings of the contexts and responses it routes.
 package proxy
 
 import (
@@ -33,6 +34,7 @@ type Deps struct {
 	Balancer *balancer.Selector
 	Inflight *balancer.Registry
 	Writer   *usage.Writer
+	Debug    *usage.DebugWriter // nil, or debug mode records what it selects
 	Log      *slog.Logger
 }
 
@@ -86,6 +88,7 @@ type call struct {
 	reply  string         // the model name the response carries: what was asked
 	waitMs int64          // time spent queued for a concurrency slot
 	err    error          // underlying failure, when there was one
+	rec    *recorder      // debug capture sink, nil unless the settings selected it
 }
 
 // liveConfig is the config document a request routes against. In-flight
@@ -327,6 +330,10 @@ func (p *Proxy) route(w http.ResponseWriter, r *http.Request, c *call, set *conf
 	st.InFlightAdd(1)
 	defer st.InFlightAdd(-1)
 
+	// Debug recording is decided here — after routing, so the entry knows
+	// where the request was aimed — and costs nothing when it is off.
+	c.rec = p.recorderFor(c, target, body, set)
+
 	p.dispatch(w, r, c, fields, body, set)
 }
 
@@ -345,6 +352,9 @@ func (p *Proxy) finish(c *call, status string, httpStatus int,
 		TokensIn: in, TokensOut: out, TokensCached: cached, TokensReasoning: reasoning,
 		Estimated: estimated, LatencyMs: lat, TTFTMs: ttft,
 	})
+	if dc := c.rec.capture(status, httpStatus, lat, in, out); dc != nil {
+		p.deps.Debug.Submit(dc)
+	}
 
 	attrs := []any{
 		"remote", c.remote, "host", t.HostID, "server", t.ServerID,
@@ -445,7 +455,8 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
 
 	switch {
 	case resp.StatusCode >= 500:
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		upBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		c.rec.setBody(upBody)
 		c.err = fmt.Errorf("upstream answered %d", resp.StatusCode)
 		WriteError(w, http.StatusBadGateway, "upstream_error", "api_error",
 			fmt.Sprintf("upstream %s/%s returned %d", t.HostID, t.ServerID, resp.StatusCode), "")
@@ -453,7 +464,7 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
 		return
 	case resp.StatusCode >= 400:
 		// Upstream 4xx: status and body passed through unchanged.
-		passthrough(w, resp)
+		passthrough(w, resp, c.rec)
 		p.finish(c, usage.StatusOK, resp.StatusCode, 0, 0, 0, 0, false, nil)
 		return
 	}
@@ -465,12 +476,14 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
 	p.respondBuffered(w, r, c, t, resp, rawBody)
 }
 
-func passthrough(w http.ResponseWriter, resp *http.Response) {
+func passthrough(w http.ResponseWriter, resp *http.Response, rec *recorder) {
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, io.LimitReader(resp.Body, 4<<20))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	rec.setBody(body)
+	_, _ = w.Write(body)
 }
 
 // failUpstream classifies a pre-response upstream failure: timeouts answer
@@ -569,6 +582,7 @@ func (p *Proxy) respondBuffered(w http.ResponseWriter, r *http.Request, c *call,
 	var u upstreamUsage
 	haveUsage := false
 	outChars := 0
+	c.rec.setBody(body)
 	// Response identity: the model field is rewritten back to the name the
 	// client asked for — its published id, or the alias it balanced through.
 	var doc map[string]json.RawMessage
@@ -735,6 +749,7 @@ func (p *Proxy) pumpStream(w http.ResponseWriter, r *http.Request, c *call,
 				}
 				ttft = &ms
 			}
+			c.rec.appendFrame(line)
 			frame := rewriteFrame(line, c.reply, &u, &haveUsage, &outChars)
 			if _, werr := w.Write(frame); werr != nil {
 				endStatus = usage.StatusCancelled

@@ -63,6 +63,7 @@ type App struct {
 	Settings  *config.SettingsManager
 	Repo      *usage.Repo
 	Writer    *usage.Writer
+	Debug     *usage.DebugWriter // debug-mode recordings, written off the request path
 	Mgr       *health.Manager
 	Inflight  *balancer.Registry
 	Balancer  *balancer.Selector
@@ -71,6 +72,8 @@ type App struct {
 
 	writerCancel context.CancelFunc
 	writerDone   chan struct{}
+	debugCancel  context.CancelFunc
+	debugDone    chan struct{}
 	httpSrv      *http.Server
 	shutdownOnce chan struct{}
 }
@@ -80,7 +83,8 @@ type App struct {
 // catalogue — is loaded here.
 func New(opts Options, log *slog.Logger) (*App, error) {
 	opts.applyDefaults()
-	a := &App{Opts: opts, Log: log, writerDone: make(chan struct{}), shutdownOnce: make(chan struct{})}
+	a := &App{Opts: opts, Log: log, writerDone: make(chan struct{}),
+		debugDone: make(chan struct{}), shutdownOnce: make(chan struct{})}
 
 	repo, err := usage.Open(filepath.Join(opts.DataDir, "usage.db"))
 	if err != nil {
@@ -118,6 +122,11 @@ func New(opts Options, log *slog.Logger) (*App, error) {
 	a.writerCancel = cancel
 	go func() { a.Writer.Run(ctx); close(a.writerDone) }()
 
+	a.Debug = usage.NewDebugWriter(repo, log)
+	dctx, dcancel := context.WithCancel(context.Background())
+	a.debugCancel = dcancel
+	go func() { a.Debug.Run(dctx); close(a.debugDone) }()
+
 	// The balancer reads the route catalogue the health loop maintains and
 	// counts what is in flight, which is the quantity its policy equalises.
 	a.Inflight = balancer.NewRegistry()
@@ -125,11 +134,15 @@ func New(opts Options, log *slog.Logger) (*App, error) {
 
 	a.Proxy = proxy.New(proxy.Deps{
 		Settings: a.Settings, Store: a.Store, Health: a.Mgr,
-		Balancer: a.Balancer, Inflight: a.Inflight, Writer: a.Writer, Log: log,
+		Balancer: a.Balancer, Inflight: a.Inflight, Writer: a.Writer,
+		Debug: a.Debug, Log: log,
 	})
 
 	// Retention: pruning runs at startup and once a day when enabled.
 	go a.pruneLoop()
+
+	// A debug window that closes flips its own switch back off.
+	go a.debugExpireLoop()
 
 	a.openAccessWarn()
 	return a, nil
@@ -360,6 +373,33 @@ func (a *App) pruneLoop() {
 	}
 }
 
+// debugExpireLoop restores the debug switch when a time limit closes. The
+// proxy gate stops recording at the deadline itself, to the millisecond;
+// this loop only makes the stored setting match what is already true, so a
+// screen opening seconds later reads "off" without arithmetic.
+func (a *App) debugExpireLoop() {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-a.shutdownOnce:
+			return
+		case <-t.C:
+			s := a.Settings.Get()
+			if !s.DebugEnabled || s.DebugUntil == 0 || time.Now().UnixMilli() < s.DebugUntil {
+				continue
+			}
+			if _, v := a.Settings.Update(context.Background(), map[string]string{
+				"debug_enabled": "false", "debug_until": "0",
+			}); len(v) > 0 {
+				a.Log.Error("debug window closed but the switch could not be reset", "violations", v)
+				continue
+			}
+			a.Log.Info("debug recording stopped: time limit reached")
+		}
+	}
+}
+
 // PruneNow runs the retention prune immediately (dashboard action).
 func (a *App) PruneNow() (int64, error) {
 	days := a.Settings.Get().RetentionDays
@@ -419,6 +459,12 @@ func (a *App) Stop() error {
 	case <-a.writerDone:
 	case <-time.After(30 * time.Second):
 		a.Log.Error("usage writer did not drain within the shutdown grace; rows were dropped")
+	}
+	a.debugCancel()
+	select {
+	case <-a.debugDone:
+	case <-time.After(30 * time.Second):
+		a.Log.Error("debug writer did not drain within the shutdown grace; recordings were dropped")
 	}
 	if err := a.Repo.Close(); err != nil && firstErr == nil {
 		firstErr = err

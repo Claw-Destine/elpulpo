@@ -1,0 +1,299 @@
+package dashboard
+
+import (
+	"strconv"
+)
+
+// DebugPage: the record switch over the list of recordings and, for the
+// selected one, its context and response — rendered as messages or raw.
+templ DebugPage(d *Deps, csrf string, v DebugView) {
+	@Layout("Debug", "debug", csrf, d, func() templ.Component { return DebugMain(v) })
+}
+
+templ DebugMain(v DebugView) {
+	<h1>Debug</h1>
+	@DebugControlsFragment(v)
+	@DebugLiveFragment(v)
+}
+
+// --- the top div: what to record ----------------------------------------------
+
+templ DebugControlsFragment(v DebugView) {
+	<div class="dbg-controls panel">
+		<form class="dbg-controls-form" hx-post="/dashboard/action/debug/save" hx-target="#dbg-save-msg" hx-swap="innerHTML">
+			<span class="dbg-toggle">
+				<strong>Debug recording</strong>
+				<label class="radio">
+					<input type="radio" name="debug_enabled" value="true" checked={ v.Enabled }/>
+					on
+				</label>
+				<label class="radio">
+					<input type="radio" name="debug_enabled" value="false" checked={ debugOff(v.Enabled) }/>
+					off
+				</label>
+			</span>
+			<label>
+				Model
+				<select name="debug_model">
+					<option value="" selected={ v.Model == "" }>every model</option>
+					for _, m := range v.Models {
+						<option value={ m } selected={ m == v.Model }>{ m }</option>
+					}
+					if v.Model != "" && !contains(v.Models, v.Model) {
+						<option value={ v.Model } selected>{ v.Model } (not in the fleet right now)</option>
+					}
+				</select>
+			</label>
+			<label>
+				Record for
+				<select name="debug_for">
+					<option value="15m" selected={ v.For == "15m" }>15 minutes</option>
+					<option value="1h" selected={ v.For == "1h" }>1 hour</option>
+					<option value="1d" selected={ v.For == "1d" }>1 day</option>
+					<option value="never" selected={ v.For == "never" }>no time limit</option>
+				</select>
+			</label>
+			<button type="submit">Apply</button>
+			<div id="dbg-save-msg" class="msg" hx-swap="innerHTML"></div>
+		</form>
+	</div>
+}
+
+// --- the second div: list + right pane -----------------------------------------
+
+templ DebugLiveFragment(v DebugView) {
+	<div
+		id="dbg-live"
+		hx-get={ dbgPollURL(v.Q) }
+		hx-trigger="every 5s, elpulpo-changed from:body"
+		hx-swap="outerHTML"
+	>
+		if v.Enabled {
+			<p class="dbg-status">
+				<span class="up">Debug recording is ON.</span>
+				if v.Model == "" {
+					<span> Every routed request is stored: its context and the model's answer.</span>
+				} else {
+					<span> Only requests aimed at <code>{ v.Model }</code> are stored.</span>
+				}
+				if v.UntilText != "" {
+					<span class="muted"> { v.UntilText }</span>
+				}
+			</p>
+		} else {
+			<p class="dbg-status muted">Debug recording is off — nothing is written to the database.</p>
+		}
+		if v.Detail != nil && v.Detail.Err != "" {
+			<div class="banner error">{ v.Detail.Err }</div>
+		}
+		<div class="dbg-split">
+			<div class="dbg-list">
+				<h2>Recorded requests</h2>
+				<table class="grid dbg-rows">
+					<thead>
+						<tr>
+							<th>When</th>
+							<th>Model</th>
+							<th class="num">In</th>
+							<th class="num">Out</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, r := range v.Records {
+							<tr
+								class={ dbgRowClass(v.Sel, r.ID) }
+								hx-get={ dbgRowURL(v.Q, r.ID) }
+								hx-target="#dbg-live"
+								hx-swap="outerHTML"
+							>
+								<td class="nowrap">
+									{ fmtTs(r.TsMs) }
+									if r.Stream {
+										<span class="flag">stream</span>
+									}
+								</td>
+								<td class="mono" title={ dbgRowTitle(r) }>{ dbgRowModel(r) }</td>
+								<td class="num">{ fmtSize(r.ReqBytes) }</td>
+								<td class="num">{ fmtSize(r.RespBytes) }</td>
+								<td>
+									<span class={ dbgStatusClass(r) }>{ dbgStatusText(r) }</span>
+								</td>
+							</tr>
+						}
+						if len(v.Records) == 0 {
+							<tr>
+								<td colspan="5" class="muted">
+									if v.Enabled {
+										Nothing recorded yet — routed requests will appear here.
+									} else {
+										No recordings. Turn debug recording on above to capture contexts and responses.
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+				<div class="dbg-list-foot">
+					<span class="hint">The newest 100 are listed; older recordings are replaced past the cap.</span>
+					<form hx-post="/dashboard/action/debug/clear" hx-target="#dbg-clear-msg" hx-confirm="Delete every recorded request? This cannot be undone.">
+						<button type="submit" class="danger secondary">Clear recordings</button>
+						<span id="dbg-clear-msg" class="msg" hx-swap="innerHTML"></span>
+					</form>
+				</div>
+			</div>
+			<div class="dbg-detail panel" id="dbg-detail">
+				if v.Detail != nil {
+					@DebugDetailFragment(v.Detail, v.Q)
+				} else {
+					<p class="muted">Select a recorded request to see its context and answer.</p>
+				}
+			</div>
+		</div>
+	</div>
+}
+
+templ DebugDetailFragment(d *DebugDetail, q debugQuery) {
+	if d.Cap != nil {
+		<div class="dbg-meta">
+			<span class="mono">{ d.Cap.Model }</span>
+			if d.Cap.Route != "" {
+				<span class="muted"> via <span class="mono">{ d.Cap.Route }</span></span>
+			}
+			<span class="muted"> on <span class="mono">{ d.Cap.HostID }/{ d.Cap.ServerID }</span></span>
+			<span class="muted"> { fmtTs(d.Cap.TsMs) } </span>
+			<span class={ dbgCapStatusClass(d.Cap) }>{ dbgCapStatusText(d.Cap) }</span>
+			<span class="muted"> { fmtI(d.Cap.LatencyMs) } ms</span>
+		</div>
+	}
+	if d.Missing {
+		<p class="muted">This recording no longer exists — it was cleared or trimmed away.</p>
+	} else {
+		<div class="dbg-modes">
+			<a href="#" hx-get={ dbgModeURL(q, "messages") } hx-target="#dbg-live" hx-swap="outerHTML" class={ dbgModeClass(q.Mode, "messages") }>messages</a>
+			<a href="#" hx-get={ dbgModeURL(q, "raw") } hx-target="#dbg-live" hx-swap="outerHTML" class={ dbgModeClass(q.Mode, "raw") }>raw</a>
+		</div>
+		if d.Mode == "raw" {
+			<h2>Request</h2>
+			<pre class="dbg-pre">{ d.RawRequest }</pre>
+			<h2>Response <span class="muted">({ d.ResponseAs })</span></h2>
+			if d.RawResponse == "" {
+				<p class="muted">No response body was captured.</p>
+			} else {
+				<pre class="dbg-pre">{ d.RawResponse }</pre>
+			}
+		} else {
+			<h2>Context</h2>
+			if len(d.Messages) == 0 {
+				<p class="muted">The request carried no messages.</p>
+			}
+			for _, m := range d.Messages {
+				@DebugMessageCard(m)
+			}
+			if d.ReqOther != "" {
+				<details class="dbg-extra">
+					<summary class="muted">other request fields</summary>
+					<pre class="dbg-pre">{ d.ReqOther }</pre>
+				</details>
+			}
+			<h2>Model response</h2>
+			if d.FrameNote != "" {
+				<p class="hint">{ d.FrameNote }</p>
+			}
+			if d.ResponseAs == "nothing" {
+				<p class="muted">No answer was captured for this request.</p>
+			}
+			for _, ch := range d.Choices {
+				if len(d.Choices) > 1 {
+					<div class="muted">choice { ch.Index }{ optFinish(ch.Finish) }</div>
+				}
+				@DebugMessageCard(ch.Msg)
+			}
+			if d.Usage != "" {
+				<p class="hint mono">{ d.Usage }</p>
+			}
+		}
+	}
+}
+
+templ DebugMessageCard(m DebugMessage) {
+	<div class={ dbgMsgClass(m.Role) }>
+		<div class="dbg-msg-role">
+			{ dbgRoleLabel(m) }
+		</div>
+		if m.Reasoning != "" {
+			<details class="dbg-reasoning">
+				<summary class="muted">reasoning</summary>
+				<div class="dbg-md">@dbgMD(m.Reasoning)</div>
+			</details>
+		}
+		for _, p := range m.Parts {
+			if p.Kind == "text" {
+				<div class="dbg-md">@dbgMD(p.Text)</div>
+			}
+			if p.Kind == "json" {
+				<pre class="dbg-pre dbg-struct">{ p.JSON }</pre>
+			}
+			if p.Kind == "image" {
+				if p.Inline {
+					<div class="dbg-image">
+						<img class="dbg-img" src={ p.URL } alt={ p.MIME } title={ p.MIME }/>
+						<div class="hint">{ p.MIME } { fmtSize(p.Bytes) }</div>
+					</div>
+				} else if p.URL != "" {
+					<div class="dbg-image hint">external image <span class="mono">{ dbgTrunc(p.URL) }</span> (not loaded)</div>
+				} else {
+					<div class="dbg-image hint">image (no data captured)</div>
+				}
+			}
+		}
+		for _, tc := range m.ToolCalls {
+			<div class="dbg-toolcall">
+				<span class="dbg-msg-role">tool call</span>
+				<span class="mono">{ tc.Name }</span>
+				if tc.ID != "" {
+					<span class="muted mono">{ tc.ID }</span>
+				}
+				<pre class="dbg-pre">{ tc.Args }</pre>
+			</div>
+		}
+		if m.Refusal != "" {
+			<div class="err">refused: { m.Refusal }</div>
+		}
+	</div>
+}
+
+// --- helpers ----------------------------------------------------------------
+
+func debugOff(on bool) bool { return !on }
+
+func dbgPollURL(q debugQuery) string { return q.pollURL() }
+
+func dbgRowURL(q debugQuery, id int64) string {
+	return "/dashboard/part/debug?" + q.with("sel", strconv.FormatInt(id, 10))
+}
+
+func dbgModeURL(q debugQuery, mode string) string {
+	return "/dashboard/part/debug?" + q.with("view", mode)
+}
+
+func dbgRowClass(sel, id int64) string {
+	if sel == id {
+		return "dbg-sel"
+	}
+	return ""
+}
+
+func dbgModeClass(mode, want string) string {
+	if mode == want {
+		return "active"
+	}
+	return "muted"
+}
+
+func optFinish(finish string) string {
+	if finish == "" {
+		return ""
+	}
+	return " — " + finish
+}

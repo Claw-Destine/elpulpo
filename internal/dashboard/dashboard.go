@@ -91,6 +91,7 @@ func (h *Handler) Registered() http.Handler {
 	mux.HandleFunc("GET /dashboard/prices", h.page(h.pagePrices))
 	mux.HandleFunc("GET /dashboard/loadbalancer", h.page(h.pageLoadBalancer))
 	mux.HandleFunc("GET /dashboard/stats", h.page(h.pageStats))
+	mux.HandleFunc("GET /dashboard/debug", h.page(h.pageDebug))
 	mux.HandleFunc("GET /dashboard/settings", h.page(h.pageSettings))
 
 	// htmx fragments.
@@ -98,6 +99,7 @@ func (h *Handler) Registered() http.Handler {
 	mux.HandleFunc("GET /dashboard/part/prices", h.part(h.partPrices))
 	mux.HandleFunc("GET /dashboard/part/loadbalancer", h.part(h.partLoadBalancer))
 	mux.HandleFunc("GET /dashboard/part/stats", h.part(h.partStats))
+	mux.HandleFunc("GET /dashboard/part/debug", h.part(h.partDebug))
 	mux.HandleFunc("GET /dashboard/part/settings", h.part(h.partSettings))
 
 	// Exports.
@@ -110,7 +112,7 @@ func (h *Handler) Registered() http.Handler {
 		"config/save", "config/import", "config/import/apply",
 		"host/save", "host/delete", "server/save", "server/delete",
 		"prices/save", "catalog/apply", "route/save", "route/delete",
-		"settings/save", "prune/run",
+		"settings/save", "prune/run", "debug/save", "debug/clear",
 	} {
 		mux.HandleFunc("POST /dashboard/action/"+action, h.routeAction)
 	}
@@ -126,6 +128,8 @@ func (h *Handler) Registered() http.Handler {
 	mux.HandleFunc("GET /api/usage/rows", h.apiUsageRows)
 	mux.HandleFunc("GET /api/usage/summary", h.apiUsageSummary)
 	mux.HandleFunc("GET /api/catalogue", h.apiCatalogue)
+	mux.HandleFunc("GET /api/debug/records", h.apiDebugRecords)
+	mux.HandleFunc("GET /api/debug/record", h.apiDebugRecord)
 
 	mux.HandleFunc("/", h.notFound)
 	return mux

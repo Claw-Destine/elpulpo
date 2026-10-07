@@ -10,7 +10,7 @@ functional spec wins and this file is wrong.
 | backend | **Go**, latest stable (only stdlib features available since 1.22) | `FlushInterval: -1` gives an unbuffered SSE pass-through; one goroutine per long-lived stream; channels make the per-server queue trivial; `go:embed` carries the price catalogue; `CGO_ENABLED=0` yields the single static binary and a shell-less image |
 | config store | **one YAML file** (`ELPULPO_CONFIG`) | the file is the store *and* the export format, so byte-stable export (scenario 24) is structural rather than a serialization exercise; hand-editable and diffable |
 | usage store | **embedded SQLite**, CGO-free (`modernc.org/sqlite`), WAL | insert-per-request with concurrent dashboard readers, no server dependency, prune is one statement; Postgres stays possible behind the repository boundary below, if it is ever wanted |
-| frontend | **SSR from the Go binary** (`templ` + htmx + no-build CSS) | five screens of tables and forms; no node build, no asset pipeline, no CORS, one Basic-auth middleware covers pages and fragments alike |
+| frontend | **SSR from the Go binary** (`templ` + htmx + no-build CSS) | six screens of tables and forms; no node build, no asset pipeline, no CORS, one Basic-auth middleware covers pages and fragments alike |
 | settings store | SQLite `settings` table | global settings are explicitly *not* in the config document but must survive a restart |
 
 No web framework, no ORM, no code generator beyond `templ`. `database/sql` with hand-written SQL.
@@ -24,6 +24,7 @@ No web framework, no ORM, no code generator beyond `templ`. `database/sql` with 
 | `gopkg.in/yaml.v3` | config decode/encode; `yaml.Node` line numbers for validation errors |
 | `modernc.org/sqlite` | usage store and settings, no CGO |
 | `a-h/templ`, vendored `htmx.min.js`, one small CSS | dashboard |
+| `yuin/goldmark` | the Debug screen renders message text as CommonMark — safe mode (raw HTML inside a message is escaped) plus an AST pass that refuses `javascript:`-style destinations |
 | `database/sql`, `crypto/subtle`, `context`, `time` | plumbing |
 
 ## Layout
@@ -32,9 +33,9 @@ No web framework, no ORM, no code generator beyond `templ`. `database/sql` with 
 cmd/elpulpo/            main: flags, env, wiring, signals
 internal/config/        config document: load, validate, canonical save, file watch
 internal/balancer/      in-flight accounting and the route pick (cost-weighted least load)
-internal/proxy/         routing, rewrite, SSE pass-through, concurrency slot
+internal/proxy/         routing, rewrite, SSE pass-through, concurrency slot, debug capture
 internal/health/        probe loop, address election, server state
-internal/usage/         repository, writer queue, queries, prune, CSV
+internal/usage/         repository, writer queue, queries, prune, CSV, debug recordings
 internal/catalog/       embedded price catalogue + file override
 internal/dashboard/     templ pages, htmx fragments, exports
 ```
@@ -102,7 +103,12 @@ proxy asks it, the dashboard renders what it says, and neither reimplements the 
    the parse cost is confined to frames carrying that key.
 7. Usage comes from the last usage-bearing frame or body; absent usage means an estimate plus the
    `estimated` flag. `ttft_ms` is recorded at the first frame written.
-8. The row is handed to the writer queue, not to SQLite, from the request goroutine.
+8. The row is handed to the writer queue, not to SQLite, from the request goroutine. When debug mode
+   selects the request — decided once at routing time (settings on, and the model filter matching
+   what was asked or where it landed) — the recorder has been collecting the request body verbatim
+   and the response (the upstream body, or its SSE frames as they are written) and is handed to the
+   debug writer's queue at the same point. Off, or past the window's deadline, the whole path is one
+   settings check and a nil test.
 9. The same terminal point logs exactly one `chat request` line: the row's host/server/model/status
    plus latency, `wait_ms` (time queued for a slot), token counts, `estimated`, and `ttft_ms` on
    streams; a request that came through a route adds `route=<alias>`, so the row and the log name the
@@ -135,8 +141,9 @@ comment rather than a lint waiver nobody reads. No verification, no pinning, no 
 **Settings bounds** live in one table in `internal/config`, validated before applying: `health_interval`
 5s–3600s, `probe_timeout`/`connect_timeout` 1s–300s, `first_byte_timeout`/`stream_idle_timeout`/
 `queue_timeout` 1s–3600s, `total_timeout` off or 1s–86400s, `max_request_size` 1 KiB–1 GiB,
-`retention_days` 0 or positive. Out of range is a field error with the range echoed (scenario 46), and
-the value in force never changes.
+`retention_days` 0 or positive. `debug_enabled` takes a boolean word; `debug_model` takes free text
+(`""` = every model); `debug_until` a non-negative unix-millisecond deadline (`0` = no window). Out
+of range is a field error with the range echoed (scenario 46), and the value in force never changes.
 
 **Time.** Period boundaries are computed with `time.Local`, so the container's `TZ` decides what
 "today" means; rows and CSV stay UTC throughout. Nothing in the schema stores an offset.
@@ -214,6 +221,26 @@ CREATE INDEX ix_host_server_ts ON requests (host_id, server_id, ts_ms);
 CREATE INDEX ix_model_ts ON requests (model, ts_ms);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE meta (version INTEGER NOT NULL);
+
+-- only written while debug mode is on:
+CREATE TABLE debug_requests (
+  id            INTEGER PRIMARY KEY,
+  ts_ms         INTEGER NOT NULL,
+  host_id       TEXT NOT NULL DEFAULT '',
+  server_id     TEXT NOT NULL DEFAULT '',
+  model         TEXT NOT NULL,             -- as the client asked
+  route         TEXT NOT NULL DEFAULT '',  -- alias it came through
+  stream        INTEGER NOT NULL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT '',
+  http_status   INTEGER NOT NULL DEFAULT 0,
+  latency_ms    INTEGER NOT NULL DEFAULT 0,
+  tokens_in     INTEGER NOT NULL DEFAULT 0,
+  tokens_out    INTEGER NOT NULL DEFAULT 0,
+  request_json  TEXT NOT NULL,             -- the context, verbatim
+  response_json TEXT,                      -- buffered response body
+  response_sse  TEXT                       -- streamed response, raw frames
+);
+CREATE INDEX ix_debug_ts ON debug_requests (ts_ms);
 ```
 
 - **Write path.** The request goroutine pushes to a buffered channel (1024); one writer commits in
@@ -226,6 +253,18 @@ CREATE TABLE meta (version INTEGER NOT NULL);
   ever outgrows that, `retention_days` is the intended lever.
 - **Prune.** Batched `DELETE ... WHERE id IN (SELECT id ... WHERE ts_ms < ? LIMIT 5000)` in a loop, so
   the daily prune never holds one long write lock. Count logged. Runs at startup and on a daily tick.
+  Debug recordings age with the usage rows — the same cutoff removes them.
+- **Debug recordings.** A second, smaller queue (128, drops with `ERROR`) writes one row per capture,
+  because a capture carries whole bodies and a full queue must mean "recording is outrunning the
+  disk", not "one row missed". Each stored side is cut at 8 MiB, and every tenth insert trims the
+  table to the newest 1000 ids — the spam guard for an operator who leaves the switch on. The list
+  query selects `length()` of the body columns rather than the bodies; only the detail view loads
+  them.
+- **Debug windows.** Recording runs inside a time limit: `debug_until` is an absolute deadline and
+  `Settings.DebugOn(now)` — one boolean and one comparison — is what the proxy gate consults, so an
+  expired window stops the writes to the millisecond. A 5-second ticker in `internal/app` notices
+  the same condition and writes the stored switch back to off, so the screen tells the truth without
+  doing deadline arithmetic; the ticker resets, never guards.
 - **CSV.** Streamed `text/csv` with `Content-Disposition`, quoted per RFC 4180, written from inside
   the `rows.Scan` loop — no materialisation.
 - **Migrations.** Numbered SQL files under `go:embed`, applied in order in a transaction, version in
@@ -330,6 +369,23 @@ stated expectation.
   and the model list the moment a host, a server or an import is applied, in every open tab. The
   stats table polls on the same 5s mechanism. No websocket: one connection model is worth more than
   the latency saved, and nobody leaves this dashboard open for hours.
+- The Debug screen is two regions, not three: a static controls form (the radio switch, the model
+  filter whose options are the published ids plus the route aliases, and a **Record for** select —
+  15 minutes, 1 hour, 1 day, no limit) and one polling fragment, `#dbg-live`, carrying the status
+  line — the effective state, with the live deadline and its time left spelled out — over the
+  recordings table and the selected recording's pane together; the set must re-read as one unit,
+  because a list refresh that dropped the selection would deselect
+  whatever the operator is reading. Applying the form starts a fresh window at the shown length
+  (the form's default is the shortest one; enabling without naming a duration gets it too), and
+  switching off clears the deadline; the store keeps the absolute `debug_until`, never a duration. The selection and the view mode travel in the fragment query
+  (`sel`, `view`) and are pushed as the page URL, so a recording link is shareable and a reload keeps
+  the pane. The messages view parses the stored JSON in Go: content strings through goldmark,
+  content-part arrays into text/JSON/`<img>` blocks (a `data:` URL renders inline — the CSP carries
+  `img-src 'self' data:` for exactly this — an external URL is named, not fetched), tool calls into
+  name plus pretty-printed arguments; an SSE recording is merged back into one message per choice
+  before it renders, with the frame count disclosed. The raw view re-indents the stored bodies and
+  hands streams over untouched. Rendering is server-side because the CSP forbids the inline script a
+  client-side renderer would need.
 
 ## Runtime and deployment
 

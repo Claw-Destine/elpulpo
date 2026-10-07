@@ -51,6 +51,10 @@ func (h *Handler) routeAction(w http.ResponseWriter, r *http.Request) {
 		h.actionSettingsSave(w, r)
 	case "prune/run":
 		h.actionPruneRun(w, r)
+	case "debug/save":
+		h.actionDebugSave(w, r)
+	case "debug/clear":
+		h.actionDebugClear(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown action"})
 	}

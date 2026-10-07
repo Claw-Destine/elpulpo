@@ -49,7 +49,9 @@
 		'config/import': 'Import not accepted',
 		'config/import/apply': 'Import not applied',
 		'catalog/apply': 'Catalogue rates not applied',
-		'prune/run': 'Nothing was pruned'
+		'prune/run': 'Nothing was pruned',
+		'debug/save': 'Debug settings not saved',
+		'debug/clear': 'Nothing was cleared'
 	};
 
 	var ACCEPTED = {
@@ -63,7 +65,9 @@
 		'settings/save': 'Settings saved.',
 		'config/save': 'Configuration saved.',
 		'config/import/apply': 'Import applied: the whole document was replaced.',
-		'catalog/apply': 'Catalogue rates applied.'
+		'catalog/apply': 'Catalogue rates applied.',
+		'debug/save': 'Debug settings saved.',
+		'debug/clear': 'Recordings cleared.'
 	};
 
 	function actionName(detail) {
@@ -199,6 +203,9 @@
 	/* The success bodies are JSON the contract fixes; the raw text is never
 	   worth showing, so each shape gets the one line an operator reads. */
 	function successText(action, body) {
+		if (action === 'debug/clear' && body.removed !== undefined) {
+			return 'Cleared ' + body.removed + ' recording' + (body.removed === 1 ? '' : 's') + '.';
+		}
 		if (body.removed !== undefined) {
 			return 'Pruned ' + body.removed + ' usage row' + (body.removed === 1 ? '' : 's') + '.';
 		}

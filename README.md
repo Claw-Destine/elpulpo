@@ -276,6 +276,22 @@ not a record of other people's typos.
   grouping by model/host/server/day with p50/p95 and amounts, totals
   row, and CSV exports that share one filter path with the screens — the
   displayed totals equal what the export re-computes.
+- **Debug** — the request recorder, **off by default**. The top of the screen
+  turns it on **for a while** — 15 minutes (the default), an hour, a day, or
+  until switched off — and optionally for one model only (a published id or
+  a route alias). While the window is open, every routed chat request is
+  stored with the context the client sent and the answer that came back.
+  A forgotten switch cannot fill the database: the recorder stops at its
+  deadline to the millisecond and resets its own switch shortly after. The
+  list shows the recordings newest first; selecting one opens the pane on
+  the right, in one of two view modes: *messages* (the default) renders each
+  context message separately — markdown text, structured content as pretty
+  JSON, embedded images inline, tool calls with their arguments — and the
+  model's answer beside them (streamed answers merged back from their SSE
+  frames); *raw* shows the stored request and response as sent. Recordings
+  cost writes to the database, so: off costs nothing, an open window keeps
+  at most the newest 1000, and `retention_days` ages them out with the usage
+  rows. "Clear recordings" empties the table in one click.
 - **Settings** — the global timing/size knobs (validated ranges, field
   errors inline, applied live), retention (`retention_days = 0` keeps
   everything; pruning is irreversible and logged), and the read-only
@@ -307,8 +323,10 @@ The SQLite database never leaves its data directory.
 
 With `retention_days > 0` usage older than the window is deleted at
 startup and daily; rows, and only rows, are affected — reference prices,
-configuration and exported CSVs are outside its reach. The Statistics
-and Settings screens state the limit while it is enabled.
+configuration and exported CSVs are outside its reach. Debug recordings
+age with the usage rows; while the window is off, the newest-1000 cap is
+what bounds them. The Statistics and Settings screens state the limit
+while it is enabled.
 
 ## Deliberate limits (v1)
 

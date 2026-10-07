@@ -29,6 +29,7 @@ Manager.States() []health.StateView
 Settings.Get() *config.Settings
 Settings.Update(ctx, patch map[string]string) (*config.Settings, []config.Violation)
 Repo.Rows / Count / Totals / Summary / WriteRowsCSV / WriteSummaryCSV / Distinct
+Repo.DebugRows / DebugGet / DebugCount / DebugClear (debug recordings)
 usage.NewPriceIndex(cfg.Prices) / ix.Lookup / usage.AmountTokens
 Catalogue.File.Catalogue.{Version,AsOf,Currency,Rates}, Catalogue.Stale, Catalogue.Match(name)
 balancer.Selector.View(cfg) []balancer.Route   // per member: Cost, InFlight, Load, Target, Preferred
@@ -59,7 +60,7 @@ displayed totals must equal the sums over an exported CSV — one code path.
 marker (see Pages): it is not a filter, so it is ignored by the query parser
 and never appears in a canonical query or an export link.
 
-## Pages (templ; layout with nav Servers / Load balancer / Prices / Statistics / Settings)
+## Pages (templ; layout with nav Servers / Load balancer / Prices / Statistics / Debug / Settings)
 
 CSP is `default-src 'self'` — **no inline JS anywhere** (an `hx-on:` attribute
 would need `unsafe-eval`, so behaviour never creeps into one). Behaviour is htmx
@@ -115,13 +116,32 @@ scenario 42) and when `Store.LastErr() != ""` (scenario 39).
   `hx-push-url`, which would push the raw request URL). The self-refresh URLs
   (`every 5s` and `elpulpo-changed`) carry `poll=1` and push nothing: automatic
   refreshes must not add history entries.
+- `GET /dashboard/debug` — the request recorder. Top region: a static
+  controls form — `debug_enabled` as on/off radio inputs, a `debug_model`
+  select whose options are the published ids plus the route aliases (""
+  = every model), and a `debug_for` window select (`15m` default, `1h`, `1d`,
+  `never`) — posting to `/dashboard/action/debug/save`. Below, one
+  fragment `#dbg-live` carrying both halves of the screen: the list of
+  recordings (newest first, ≤ 100, each row a button) and, to its right, the
+  pane for the recording the `sel` query parameter selects. `view=messages`
+  (the default) renders the stored context message by message — roles,
+  markdown text, structured content as pretty JSON, `data:` images inline —
+  plus the model's answer (stream recordings merged back from their SSE
+  frames, with the frame count disclosed); `view=raw` re-indents the stored
+  request and shows the stored response verbatim (JSON or frames). Fragment
+  requests push `/dashboard/debug?sel=<id>[&view=raw]` as the page URL; the
+  `every 5s` / `elpulpo-changed` self-refresh carries `poll=1` and pushes
+  nothing, exactly as on Statistics. A Clear button POSTs
+  `/dashboard/action/debug/clear` after a confirm. The recording stops at
+  `debug_until` regardless of the switch; a closing window resets the switch
+  within seconds (see [Request debugging](../specs/functional.specs.md)).
 - `GET /dashboard/settings` — every knob (durations as "30s" strings, size
   as "32MiB", `retention_days` int, `total_timeout` 0 = off) with
   `hx-post="/dashboard/action/settings/save"`; field errors re-rendered
   inline. Read-only env-credential display (`ELPULPO_PROXY_TOKEN`,
   `ELPULPO_DASHBOARD_USER/PASSWORD`: set/unset only — never values),
   warning when unset; "pruning is irreversible" note; "Run prune now" button.
-- Fragments: `GET /dashboard/part/servers|loadbalancer|prices|stats|settings`.
+- Fragments: `GET /dashboard/part/servers|loadbalancer|prices|stats|debug|settings`.
 
 ## Actions (POST; accept JSON body or form fields; JSON responses)
 
@@ -159,6 +179,8 @@ one banner above the page, dropped as soon as that path answers again.
 | `/dashboard/action/route/delete` | `{"alias","h"}` | drop the route; unknown alias → 400 |
 | `/dashboard/action/settings/save` | settings fields (see `config.SettingsManager.Update`) | `Update`; violations → 422 |
 | `/dashboard/action/prune/run` | — | `Deps.Prune()` → `{"removed":N}`; retention off → 400 |
+| `/dashboard/action/debug/save` | `debug_enabled` (`true`/`false`), `debug_model` (model id or ""; empty clears the filter) and/or `debug_for` (`15m`/`1h`/`1d`/`never`) | translates `debug_for` into the absolute `debug_until` and calls `Settings.Update` restricted to the debug keys: enabling without naming a window gets `15m`; turning off clears it → `{"ok":true}` + `HX-Trigger`; a bad duration or value → 422 |
+| `/dashboard/action/debug/clear` | — | `Repo.DebugClear` → `{"ok":true,"removed":N}` + `HX-Trigger` |
 
 **catalog/apply:** match `model` via `Catalogue.Match` (case-insensitive
 exact); no match → 400 (never a fuzzy guess, scenario 34). If the document
@@ -191,6 +213,15 @@ If a price entry already exists for that name (or its aliases) and
 - `/api/usage/summary?<query>` → `Repo.Summary` JSON (with `currency`,
   `no_price_models`, grand total)
 - `/api/catalogue` → `{"version","as_of","currency","stale","rates":[...]}`
+- `/api/debug/records?[limit,offset]` → `{"enabled","model","until_ms","records":[{"id",
+  "timestamp_ms","host","server","model","route","stream","status",
+  "http_status","latency_ms","tokens_in","tokens_out","request_bytes",
+  "response_bytes"}…]}` (newest first; sizes, never bodies; `enabled` is the
+  effective state — on and inside its window — and `until_ms` the live
+  deadline, `0` for none)
+- `/api/debug/record?id=<id>` → one recording: metadata plus `request` (the
+  stored JSON) and `response` (buffered) or `response_sse` (stream frames);
+  unknown id → 404
 
 ## templ workflow
 

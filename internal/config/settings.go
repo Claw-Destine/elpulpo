@@ -23,6 +23,17 @@ type Settings struct {
 	MaxRequestSize    int64         `json:"max_request_size"`
 	QueueTimeout      time.Duration `json:"queue_timeout"`
 	RetentionDays     int           `json:"retention_days"` // 0 == off
+	DebugEnabled      bool          `json:"debug_enabled"`  // record contexts + responses
+	DebugModel        string        `json:"debug_model"`    // recorded model ("" = all)
+	DebugUntil        int64         `json:"debug_until"`    // deadline, unix ms (0 = no limit)
+}
+
+// DebugOn reports whether debug recording is active at now: switched on and,
+// when a time limit was set, not yet past its deadline. The deadline is what
+// bounds a forgotten switch — flipping the setting itself at expiry is a
+// courtesy to the screen, not the guard.
+func (s *Settings) DebugOn(now time.Time) bool {
+	return s.DebugEnabled && (s.DebugUntil == 0 || now.UnixMilli() < s.DebugUntil)
 }
 
 // DefaultSettings holds the authoritative v1 defaults.
@@ -37,6 +48,9 @@ func DefaultSettings() Settings {
 		MaxRequestSize:    32 << 20,
 		QueueTimeout:      60 * time.Second,
 		RetentionDays:     0,
+		DebugEnabled:      false,
+		DebugModel:        "",
+		DebugUntil:        0,
 	}
 }
 
@@ -76,7 +90,7 @@ func (m *SettingsManager) Gen() int64 { return m.gen.Load() }
 var settingKeys = []string{
 	"health_interval", "probe_timeout", "connect_timeout", "first_byte_timeout",
 	"stream_idle_timeout", "total_timeout", "max_request_size", "queue_timeout",
-	"retention_days",
+	"retention_days", "debug_enabled", "debug_model", "debug_until",
 }
 
 // Load reads persisted values over the defaults.
@@ -111,7 +125,12 @@ func (m *SettingsManager) Update(ctx context.Context, patch map[string]string) (
 	written := map[string]string{}
 	for _, k := range settingKeys {
 		raw, ok := patch[k]
-		if !ok || strings.TrimSpace(raw) == "" {
+		if !ok {
+			continue
+		}
+		// An empty debug_model is a real value: it means "every model".
+		// Every other knob keeps its live value when the patch is blank.
+		if k != "debug_model" && strings.TrimSpace(raw) == "" {
 			continue
 		}
 		if viol := applySettingField(&candidate, k, raw); viol != nil {
@@ -283,6 +302,23 @@ func applySettingField(dst *Settings, key, raw string) *Violation {
 			return &Violation{Path: key, Msg: fmt.Sprintf("retention_days must be 0 (off) or a positive integer, got %q", raw)}
 		}
 		dst.RetentionDays = n
+	case "debug_enabled":
+		switch strings.ToLower(raw) {
+		case "true", "on", "1", "yes":
+			dst.DebugEnabled = true
+		case "false", "off", "0", "no":
+			dst.DebugEnabled = false
+		default:
+			return &Violation{Path: key, Msg: fmt.Sprintf("debug_enabled must be true or false, got %q", raw)}
+		}
+	case "debug_model":
+		dst.DebugModel = strings.TrimSpace(raw) // "" = record every model
+	case "debug_until":
+		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil || n < 0 {
+			return &Violation{Path: key, Msg: fmt.Sprintf("debug_until must be a unix-millisecond deadline (0 = no limit), got %q", raw)}
+		}
+		dst.DebugUntil = n
 	default:
 		return &Violation{Path: key, Msg: "unknown setting"}
 	}

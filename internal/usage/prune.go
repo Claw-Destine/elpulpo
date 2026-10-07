@@ -30,8 +30,14 @@ func (r *Repo) Prune(ctx context.Context, cutoffMs int64) (int64, error) {
 	}
 }
 
-// PruneOlderThan prunes rows older than n days from now.
+// PruneOlderThan prunes rows older than n days from now. Debug recordings
+// age with the usage rows: retention prunes both tables.
 func (r *Repo) PruneOlderThan(ctx context.Context, days int) (int64, error) {
 	cutoff := time.Now().AddDate(0, 0, -days).UnixMilli()
-	return r.Prune(ctx, cutoff)
+	usage, err := r.Prune(ctx, cutoff)
+	if err != nil {
+		return usage, err
+	}
+	debug, err := r.PruneDebug(ctx, cutoff)
+	return usage + debug, err
 }
