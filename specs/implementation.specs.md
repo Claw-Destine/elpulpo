@@ -364,6 +364,11 @@ stated expectation.
   member picker is a `<datalist>` of the published ids: a native dropdown of what the fleet offers
   that still accepts a typed name, which is why the screen needs no scripted widget of its own under
   `default-src 'self'`.
+- **Conditional attributes are written `name?={ expr }` in the templ sources.** The plain
+  `name={ expr }` form renders the attribute *always*, carrying the expression's string value — and
+  HTML treats a present boolean attribute as true, so `checked="false"` checks the box and
+  `selected="false"` selects the option (the last option then wins the select). The `?=` form is
+  what compiles to the `if expr { write " name" }` the screens need.
 - A mutation answers `HX-Trigger: elpulpo-changed`. htmx dispatches it on the submitting form and the
   event bubbles, so the regions listen `elpulpo-changed from:body` — that is what reloads the table
   and the model list the moment a host, a server or an import is applied, in every open tab. The

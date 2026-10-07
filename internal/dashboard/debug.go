@@ -214,15 +214,13 @@ func dbgLeft(d time.Duration) string {
 	if d < time.Minute {
 		return strconv.Itoa(int(d.Round(time.Second)/time.Second)) + "s"
 	}
-	if d < time.Hour {
-		return strconv.Itoa(int(d.Round(time.Minute)/time.Minute)) + "m"
-	}
-	h := d.Truncate(time.Hour)
-	m := (d - h).Round(time.Minute)
+	d = d.Round(time.Minute) // round first: 23h59m59s must read 24h, not 23h60m
+	h := d / time.Hour
+	m := (d % time.Hour) / time.Minute
 	if m == 0 {
-		return strconv.Itoa(int(h/time.Hour)) + "h"
+		return strconv.Itoa(int(h)) + "h"
 	}
-	return strconv.Itoa(int(h/time.Hour)) + "h" + strconv.Itoa(int(m/time.Minute)) + "m"
+	return strconv.Itoa(int(h)) + "h" + strconv.Itoa(int(m)) + "m"
 }
 
 // --- handlers ----------------------------------------------------------------

@@ -35,10 +35,10 @@ templ StatsFiltersForm(v StatsView) {
 		<label>
 			Period
 			<select name="period" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-trigger="change">
-				<option value="all" selected={ v.Q.Period == "all" }>All time</option>
-				<option value="today" selected={ v.Q.Period == "today" }>Today</option>
-				<option value="month" selected={ v.Q.Period == "month" }>This month</option>
-				<option value="custom" selected={ v.Q.Period == "custom" }>Custom range</option>
+				<option value="all" selected?={ v.Q.Period == "all" }>All time</option>
+				<option value="today" selected?={ v.Q.Period == "today" }>Today</option>
+				<option value="month" selected?={ v.Q.Period == "month" }>This month</option>
+				<option value="custom" selected?={ v.Q.Period == "custom" }>Custom range</option>
 			</select>
 		</label>
 		<label>
@@ -53,7 +53,7 @@ templ StatsFiltersForm(v StatsView) {
 			Hosts (multi-select, AND)
 			<select name="host" multiple size="4">
 				for _, o := range v.Options.Hosts {
-					<option value={ o } selected={ selected(v.Q.Hosts, o) }>{ o }</option>
+					<option value={ o } selected?={ selected(v.Q.Hosts, o) }>{ o }</option>
 				}
 			</select>
 		</label>
@@ -61,7 +61,7 @@ templ StatsFiltersForm(v StatsView) {
 			Servers (multi-select, AND)
 			<select name="server" multiple size="4">
 				for _, o := range v.Options.Servers {
-					<option value={ o } selected={ selected(v.Q.Servers, o) }>{ o }</option>
+					<option value={ o } selected?={ selected(v.Q.Servers, o) }>{ o }</option>
 				}
 			</select>
 		</label>
@@ -69,7 +69,7 @@ templ StatsFiltersForm(v StatsView) {
 			Endpoints (multi-select, AND)
 			<select name="endpoint" multiple size="4">
 				for _, o := range v.Options.Endpoints {
-					<option value={ o } selected={ selected(v.Q.Endpoints, o) }>{ o }</option>
+					<option value={ o } selected?={ selected(v.Q.Endpoints, o) }>{ o }</option>
 				}
 			</select>
 		</label>
@@ -77,7 +77,7 @@ templ StatsFiltersForm(v StatsView) {
 			Statuses (multi-select, AND)
 			<select name="status" multiple size="4">
 				for _, o := range v.Options.Statuses {
-					<option value={ o } selected={ selected(v.Q.Statuses, o) }>{ o }</option>
+					<option value={ o } selected?={ selected(v.Q.Statuses, o) }>{ o }</option>
 				}
 			</select>
 		</label>
@@ -88,19 +88,19 @@ templ StatsFiltersForm(v StatsView) {
 		<label>
 			Group summary by
 			<select name="group_by" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-trigger="change">
-				<option value="model" selected={ v.Q.GroupBy == "model" }>model</option>
-				<option value="host" selected={ v.Q.GroupBy == "host" }>host</option>
-				<option value="server" selected={ v.Q.GroupBy == "server" }>server</option>
-				<option value="day" selected={ v.Q.GroupBy == "day" }>day</option>
+				<option value="model" selected?={ v.Q.GroupBy == "model" }>model</option>
+				<option value="host" selected?={ v.Q.GroupBy == "host" }>host</option>
+				<option value="server" selected?={ v.Q.GroupBy == "server" }>server</option>
+				<option value="day" selected?={ v.Q.GroupBy == "day" }>day</option>
 			</select>
 		</label>
 		<label>
 			Rows per page
 			<select name="page_size" hx-get="/dashboard/part/stats" hx-target="#stats-body" hx-swap="outerHTML" hx-trigger="change">
-				<option value="25" selected={ v.Q.PageSize == 25 }>25</option>
-				<option value="50" selected={ v.Q.PageSize == 50 }>50</option>
-				<option value="100" selected={ v.Q.PageSize == 100 }>100</option>
-				<option value="250" selected={ v.Q.PageSize == 250 }>250</option>
+				<option value="25" selected?={ v.Q.PageSize == 25 }>25</option>
+				<option value="50" selected?={ v.Q.PageSize == 50 }>50</option>
+				<option value="100" selected?={ v.Q.PageSize == 100 }>100</option>
+				<option value="250" selected?={ v.Q.PageSize == 250 }>250</option>
 			</select>
 		</label>
 		<div>

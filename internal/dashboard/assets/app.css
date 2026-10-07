@@ -231,11 +231,15 @@ label.radio input { display: inline-block; margin: 0; }
 
 .dbg-split {
 	display: grid;
-	grid-template-columns: minmax(280px, 34%) 1fr;
+	/* minmax(0, …) on both tracks: a grid track's floor is otherwise its
+	   content's min-content, and a wide recordings table then overflows its
+	   column and paints under the detail pane. */
+	grid-template-columns: minmax(300px, 40%) minmax(0, 1fr);
 	gap: 1rem;
 	align-items: start;
 }
 
+.dbg-list { min-width: 0; overflow-x: auto; }
 .dbg-detail { min-width: 0; min-height: 12rem; }
 
 .dbg-rows tbody tr { cursor: pointer; }

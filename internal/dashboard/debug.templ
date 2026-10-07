@@ -24,20 +24,20 @@ templ DebugControlsFragment(v DebugView) {
 			<span class="dbg-toggle">
 				<strong>Debug recording</strong>
 				<label class="radio">
-					<input type="radio" name="debug_enabled" value="true" checked={ v.Enabled }/>
+					<input type="radio" name="debug_enabled" value="true" checked?={ v.Enabled }/>
 					on
 				</label>
 				<label class="radio">
-					<input type="radio" name="debug_enabled" value="false" checked={ debugOff(v.Enabled) }/>
+					<input type="radio" name="debug_enabled" value="false" checked?={ debugOff(v.Enabled) }/>
 					off
 				</label>
 			</span>
 			<label>
 				Model
 				<select name="debug_model">
-					<option value="" selected={ v.Model == "" }>every model</option>
+					<option value="" selected?={ v.Model == "" }>every model</option>
 					for _, m := range v.Models {
-						<option value={ m } selected={ m == v.Model }>{ m }</option>
+						<option value={ m } selected?={ m == v.Model }>{ m }</option>
 					}
 					if v.Model != "" && !contains(v.Models, v.Model) {
 						<option value={ v.Model } selected>{ v.Model } (not in the fleet right now)</option>
@@ -47,10 +47,10 @@ templ DebugControlsFragment(v DebugView) {
 			<label>
 				Record for
 				<select name="debug_for">
-					<option value="15m" selected={ v.For == "15m" }>15 minutes</option>
-					<option value="1h" selected={ v.For == "1h" }>1 hour</option>
-					<option value="1d" selected={ v.For == "1d" }>1 day</option>
-					<option value="never" selected={ v.For == "never" }>no time limit</option>
+					<option value="15m" selected?={ v.For == "15m" }>15 minutes</option>
+					<option value="1h" selected?={ v.For == "1h" }>1 hour</option>
+					<option value="1d" selected?={ v.For == "1d" }>1 day</option>
+					<option value="never" selected?={ v.For == "never" }>no time limit</option>
 				</select>
 			</label>
 			<button type="submit">Apply</button>

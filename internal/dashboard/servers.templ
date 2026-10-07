@@ -206,16 +206,16 @@ templ ServersFormsFragment(v ServersView) {
 							<label>
 								API adapter
 								<select name="api">
-									<option value="ollama" selected={ srv.API == "ollama" }>ollama</option>
-									<option value="openai" selected={ srv.API == "openai" }>openai</option>
+									<option value="ollama" selected?={ srv.API == "ollama" }>ollama</option>
+									<option value="openai" selected?={ srv.API == "openai" }>openai</option>
 								</select>
 							</label>
 							<label>Port<input name="port" value={ fmtI(int64(srv.Port)) }/></label>
 							<label>
 								Scheme
 								<select name="scheme">
-									<option value="http" selected={ srv.Scheme == "http" }>http</option>
-									<option value="https" selected={ srv.Scheme == "https" }>https</option>
+									<option value="http" selected?={ srv.Scheme == "http" }>http</option>
+									<option value="https" selected?={ srv.Scheme == "https" }>https</option>
 								</select>
 							</label>
 							<label>Description<input name="description" value={ srv.Description }/></label>
@@ -240,16 +240,16 @@ templ ServersFormsFragment(v ServersView) {
 						<label>
 							API adapter
 							<select name="api">
-								<option value="ollama" selected={ true }>ollama</option>
-								<option value="openai" selected={ false }>openai</option>
+								<option value="ollama" selected?={ true }>ollama</option>
+								<option value="openai" selected?={ false }>openai</option>
 							</select>
 						</label>
 						<label>Port<input name="port" placeholder="11434"/></label>
 						<label>
 							Scheme
 							<select name="scheme">
-								<option value="http" selected={ true }>http</option>
-								<option value="https" selected={ false }>https</option>
+								<option value="http" selected?={ true }>http</option>
+								<option value="https" selected?={ false }>https</option>
 							</select>
 						</label>
 						<label>Description<input name="description"/></label>
