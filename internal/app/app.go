@@ -260,8 +260,11 @@ func (a *App) basicAuth(next http.Handler) http.Handler {
 // --- routes ---------------------------------------------------------------
 
 // knownOpenAIPath answers /v1/* paths that exist in the OpenAI API but are
-// not proxied in v1 (completions, embeddings, …) with unsupported_endpoint;
-// everything else under /v1 is a plain 404.
+// not proxied in v1 (completions, embeddings, response retrieval, …) with
+// unsupported_endpoint; everything else under /v1 is a plain 404. The
+// proxied set is GET /v1/models, POST /v1/chat/completions and POST
+// /v1/responses — other methods on those paths, and the per-id subpaths of
+// /v1/responses, land here.
 func v1NotFound(w http.ResponseWriter, r *http.Request) {
 	p := strings.Trim(r.URL.Path, "/")
 	seg, _, _ := strings.Cut(strings.TrimPrefix(p, "v1/"), "/")
@@ -293,6 +296,7 @@ func (a *App) Handler() http.Handler {
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/models", a.Proxy.Models)
 	v1.HandleFunc("POST /v1/chat/completions", a.Proxy.Chat)
+	v1.HandleFunc("POST /v1/responses", a.Proxy.Responses)
 	v1.HandleFunc("/", v1NotFound)
 	mux.Handle("/v1/", a.proxyAuth(cors(v1)))
 

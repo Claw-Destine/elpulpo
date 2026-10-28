@@ -20,7 +20,10 @@ import (
 
 // Upstream is a fake LLM server shaped either like OpenAI (`api:
 // "openai"` → /v1/models) or like Ollama (`api: "ollama"` → /api/tags,
-// plus the OpenAI-compatible /v1/chat/completions). Knobs cover fixed model
+// plus the OpenAI-compatible /v1/chat/completions). Both completions
+// dialects — /v1/chat/completions and /v1/responses — answer on every fake,
+// in the shapes the real API and vLLM use, so the proxy's Responses path has
+// a server to talk to. Knobs cover fixed model
 // lists, first-byte delay, mid-stream stall, missing usage, 500s and
 // held-open streams for disconnect tests. Every request header is recorded.
 type Upstream struct {
@@ -28,9 +31,11 @@ type Upstream struct {
 	API      string // "openai" (default) or "ollama"
 	Models   []string
 	ChatFunc func(req map[string]json.RawMessage, w http.ResponseWriter, r *http.Request)
+	// ResponsesFunc overrides the default /v1/responses answer.
+	ResponsesFunc func(req map[string]json.RawMessage, w http.ResponseWriter, r *http.Request)
 
 	// knobs
-	Status         int           // chat status override (0 = 200)
+	Status         int           // chat status override (0 = 200); applies to both endpoints
 	Body           string        // body override for non-2xx
 	NoUsage        bool          // omit usage entirely (fallback estimate)
 	FirstByteDelay time.Duration // delay before the first response byte
@@ -42,12 +47,16 @@ type Upstream struct {
 	UsageCached   int64
 	UsageReasoned int64
 	ChatCount     int64
-	Hits          atomic.Int64 // every request, any endpoint
+	// ResponsesCount counts /v1/responses requests, ChatCount the other one.
+	ResponsesCount int64
+	Hits           atomic.Int64 // every request, any endpoint
 
-	mu       sync.Mutex
-	lastHdr  http.Header
-	lastBody map[string]json.RawMessage
-	bodies   []map[string]json.RawMessage
+	mu         sync.Mutex
+	lastHdr    http.Header
+	lastBody   map[string]json.RawMessage
+	bodies     []map[string]json.RawMessage
+	respBodies []map[string]json.RawMessage
+	respLast   map[string]json.RawMessage
 }
 
 // NewUpstream starts a fake upstream on 127.0.0.1 (or host, if given as
@@ -62,6 +71,7 @@ func NewUpstream(t testing.TB, api string, models ...string) *Upstream {
 	mux.HandleFunc("/v1/models", u.handleModels)
 	mux.HandleFunc("/api/tags", u.handleModels)
 	mux.HandleFunc("/v1/chat/completions", u.handleChat)
+	mux.HandleFunc("/v1/responses", u.handleResponses)
 	srv := httptest.NewServer(mux)
 	u.srv = srv
 	t.Cleanup(srv.Close)
@@ -90,6 +100,7 @@ func (u *Upstream) handler() http.Handler {
 	mux.HandleFunc("/v1/models", u.handleModels)
 	mux.HandleFunc("/api/tags", u.handleModels)
 	mux.HandleFunc("/v1/chat/completions", u.handleChat)
+	mux.HandleFunc("/v1/responses", u.handleResponses)
 	return mux
 }
 
@@ -124,7 +135,8 @@ func (u *Upstream) Hold() chan struct{} {
 // Close stops the fake early (scenario: upstream stopped).
 func (u *Upstream) Close() { u.srv.Close() }
 
-// LastAuth returns the Authorization header of the last chat request.
+// LastAuth returns the Authorization header of the last proxied request,
+// chat or responses.
 func (u *Upstream) LastAuth() string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -156,6 +168,20 @@ func (u *Upstream) ChatBodies() []map[string]json.RawMessage {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]map[string]json.RawMessage(nil), u.bodies...)
+}
+
+// LastResponsesBody returns the last parsed /v1/responses request body.
+func (u *Upstream) LastResponsesBody() map[string]json.RawMessage {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.respLast
+}
+
+// ResponsesBodies returns every parsed /v1/responses body in arrival order.
+func (u *Upstream) ResponsesBodies() []map[string]json.RawMessage {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]map[string]json.RawMessage(nil), u.respBodies...)
 }
 
 func (u *Upstream) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +331,158 @@ func (u *Upstream) handleChat(w http.ResponseWriter, r *http.Request) {
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+// handleResponses answers /v1/responses in the OpenAI Responses shape: the
+// buffered body is a response object (model at its top level, usage as
+// input_tokens/output_tokens), and a stream is an event: + data: SSE of
+// typed envelopes whose terminal response.completed event carries the
+// finished response object — usage included unconditionally, as the real
+// API and vLLM/Ollama/llama.cpp report it (NoUsage is what takes it away).
+func (u *Upstream) handleResponses(w http.ResponseWriter, r *http.Request) {
+	u.Hits.Add(1)
+	u.mu.Lock()
+	u.lastHdr = r.Header.Clone()
+	u.ResponsesCount++
+	u.mu.Unlock()
+	var body map[string]json.RawMessage
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	u.mu.Lock()
+	u.respLast = body
+	u.respBodies = append(u.respBodies, body)
+	u.mu.Unlock()
+
+	if u.ResponsesFunc != nil {
+		u.ResponsesFunc(body, w, r)
+		return
+	}
+	if u.Status >= 400 {
+		if u.FirstByteDelay > 0 {
+			time.Sleep(u.FirstByteDelay)
+		}
+		w.WriteHeader(u.Status)
+		b := u.Body
+		if b == "" {
+			b = `{"error":{"message":"boom"}}`
+		}
+		_, _ = w.Write([]byte(b))
+		return
+	}
+	var model string
+	_ = json.Unmarshal(body["model"], &model)
+	var stream bool
+	if raw, ok := body["stream"]; ok {
+		_ = json.Unmarshal(raw, &stream)
+	}
+	includeTokenUsage := true // the API reports usage in the terminal event unconditionally
+	if raw, ok := body["stream_options"]; ok {
+		var so map[string]any
+		if json.Unmarshal(raw, &so) == nil {
+			if v, ok := so["include_token_usage"].(bool); ok {
+				includeTokenUsage = v
+			}
+		}
+	}
+
+	const respText = "Hello from the fake upstream — a nice long reply to estimate."
+	usageObj := func() map[string]any {
+		um := map[string]any{
+			"input_tokens": u.UsageIn, "output_tokens": u.UsageOut,
+			"total_tokens": u.UsageIn + u.UsageOut,
+		}
+		if u.UsageCached > 0 {
+			um["input_tokens_details"] = map[string]any{"cached_tokens": u.UsageCached}
+		}
+		if u.UsageReasoned > 0 {
+			um["output_tokens_details"] = map[string]any{"reasoning_tokens": u.UsageReasoned}
+		}
+		return um
+	}
+	messageItem := func(text string) map[string]any {
+		return map[string]any{
+			"id": "msg_fake", "type": "message", "role": "assistant",
+			"content": []any{map[string]any{
+				"type": "output_text", "text": text, "annotations": []any{},
+			}},
+		}
+	}
+	snapshot := func(status string, withOutput, withUsage bool) map[string]any {
+		s := map[string]any{
+			"id": "resp-fake", "object": "response", "created_at": 1,
+			"model": model, "status": status,
+		}
+		if withOutput {
+			s["output"] = []any{messageItem(respText)}
+		} else {
+			s["output"] = []any{}
+		}
+		if withUsage && !u.NoUsage {
+			s["usage"] = usageObj()
+		}
+		return s
+	}
+
+	if !stream {
+		if u.FirstByteDelay > 0 {
+			time.Sleep(u.FirstByteDelay)
+		}
+		resp := snapshot("completed", true, true)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// SSE: event: + data: pairs, terminated by response.completed, no
+	// data: [DONE] — the real API ends the stream there too.
+	if u.FirstByteDelay > 0 {
+		time.Sleep(u.FirstByteDelay)
+	}
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	seq := 0
+	event := func(name string, payload map[string]any) {
+		seq++
+		payload["type"] = name
+		payload["sequence_number"] = seq
+		b, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	event("response.created", map[string]any{"response": snapshot("in_progress", false, false)})
+	event("response.in_progress", map[string]any{"response": snapshot("in_progress", false, false)})
+	event("response.output_item.added", map[string]any{
+		"output_index": 0,
+		"item":         map[string]any{"id": "msg_fake", "type": "message", "role": "assistant", "content": []any{}},
+	})
+	event("response.content_part.added", map[string]any{
+		"item_id": "msg_fake", "output_index": 0, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+	})
+	deltas := []string{"Hel", "lo ", "wor", "ld"}
+	for i, d := range deltas {
+		event("response.output_text.delta", map[string]any{
+			"item_id": "msg_fake", "output_index": 0, "content_index": 0, "delta": d,
+		})
+		if i == 1 && u.MidStreamStall > 0 {
+			time.Sleep(u.MidStreamStall)
+		}
+	}
+	if hold := u.Hold(); hold != nil {
+		select {
+		case <-hold:
+		case <-time.After(30 * time.Second):
+		}
+		return
+	}
+	event("response.output_text.done", map[string]any{
+		"item_id": "msg_fake", "output_index": 0, "content_index": 0, "text": "Hello world",
+	})
+	event("response.completed", map[string]any{
+		"response": snapshot("completed", true, includeTokenUsage),
+	})
 }
 
 // NewUpstreamOnPort binds the fake upstream to host:port exactly — for

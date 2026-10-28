@@ -9,7 +9,7 @@ Covers **v1** only. Deferred items are listed in [Out of scope](#out-of-scope-v1
 | host | a machine running one or more LLM servers; it may be reachable under several addresses (LAN, VPN), listed in preference order |
 | host_addresses | the ordered addresses of a host; position 0 is preferred, the rest are fallbacks |
 | server | one LLM endpoint: a host address + port + API adapter |
-| api | the adapter El Pulpo uses to talk to a server (model-list endpoint, chat endpoint, usage parsing) |
+| api | the adapter El Pulpo uses to talk to a server (model-list endpoint, completions endpoints, usage parsing) |
 | base model name | the model name as reported by the server, e.g. `qwen3.8:27b` |
 | published model id | `<base-model>-<server-id>@<host-id>` — the name clients address |
 | alias | an alternative name for a base model name, host-independent — **pricing only**, routable only when a route deliberately takes the same spelling |
@@ -185,8 +185,8 @@ route puts both behind one name, which is what [Load balancing](#load-balancing)
 
 A route gives a fleet one more requestable name. Its `alias` behaves exactly like a published model
 id from the client's side — it appears in `GET /v1/models`, is accepted by `POST
-/v1/chat/completions`, and is the name the response carries back — while behind it the request is
-aimed at one of the route's members:
+/v1/chat/completions` and by `POST /v1/responses`, and is the name the response carries back — while
+behind it the request is aimed at one of the route's members:
 
 - **Publishing.** The alias is listed while at least one of its members can answer, and withdrawn as
   soon as none can: the model list never carries a name that could only answer `404`. A member whose
@@ -220,13 +220,22 @@ name spellings for lookup, never routable.
 
 Supported in v1:
 
-| api | model list endpoint | chat endpoint | usage source |
+| api | model list endpoint | chat completions endpoint | usage source |
 | --- | --- | --- | --- |
 | `openai` | `GET /v1/models` (`data[].id`) | `POST /v1/chat/completions` | `usage.prompt_tokens` / `usage.completion_tokens` |
 | `ollama` | `GET /api/tags` (`models[].name`) | `POST /v1/chat/completions` (Ollama's OpenAI-compat layer) | as above |
 
 An adapter must define all three columns. Unsupported or omitted `usage` is handled by the token
 fallback in [Usage recording](#usage-recording).
+
+`POST /v1/responses` is not a separate adapter: both adapters answer it by calling **the same path
+on the chosen server** — the Responses dialect is a property of the client's request, not of the
+server's identity. Which servers actually serve it is the servers' business: vLLM, Ollama and
+llama.cpp expose it today; one that does not answers its own `4xx`, and El Pulpo passes that through
+like any other upstream `4xx`. Usage on this endpoint is read as `usage.input_tokens` /
+`usage.output_tokens` (with `input_tokens_details.cached_tokens` and
+`output_tokens_details.reasoning_tokens` as the detail subsets); a server that spells those counts
+with the chat names is understood too.
 
 ### Upstream TLS
 
@@ -257,6 +266,7 @@ One HTTP listener serves the proxy and the dashboard.
 | --- | --- |
 | `GET /v1/models` | OpenAI-shaped list of every requestable name, sorted: the published model ids of healthy servers **plus the alias of every route with at least one answerable member** |
 | `POST /v1/chat/completions` | routed on exact match of `model` against a published id, or against a route alias (which member serves is the balancer's choice); forwarded to that one server with `model` replaced by the base model name |
+| `POST /v1/responses` | the OpenAI Responses API, routed and recorded exactly like `POST /v1/chat/completions` — the same published ids, the same aliases, the same slots and limits — with only the response identity translated: `model` is rewritten wherever the dialect puts it, everything else passes through. Retrieval (`GET /v1/responses/{id}`), cancellation and streaming a stored response are **not** proxied: El Pulpo stores no responses, so response chaining stays between the client and its server |
 | anything else | `404`, with `unsupported_endpoint` for valid OpenAI paths that v1 does not proxy (completions, embeddings, …) |
 
 There is no way to address a host or a server directly: the published model id is the only handle
@@ -277,17 +287,23 @@ or an alias whose every member is, `404 model_not_found` (`reason: not_available
 next health probe).
 
 **Response identity.** Wherever an upstream sends a `model` field — in the JSON body and in every SSE
-chunk — it is rewritten back to the name the client asked for, published id or alias, so clients see
-what they requested and a client-side cache keyed on the model name stays coherent. An upstream that
-sends no `model` at all leaves the proxy nothing to rewrite; the proxy does not invent the field. What
-actually served is visible in the log line and the usage row, never in the response.
+chunk, at the top level (chat completions, and older Responses servers) or inside a `response` object
+(Responses events and bodies) — it is rewritten back to the name the client asked for, published id or
+alias, so clients see what they requested and a client-side cache keyed on the model name stays
+coherent. An upstream that sends no `model` at all leaves the proxy nothing to rewrite; the proxy does
+not invent the field. What actually served is visible in the log line and the usage row, never in the
+response.
 
 ### Streaming
 
 Streaming responses (`stream: true`) are proxied through chunk by chunk, flushed per chunk, never
-buffered. When a client requests a stream without setting `stream_options.include_usage`, El Pulpo
-sets it to `true` for both adapters so the final chunk carries usage, and forwards that chunk
-untouched. A client's explicit `stream_options` always wins.
+buffered — the same rule on both endpoints. When a client requests a *chat* stream without setting
+`stream_options.include_usage`, El Pulpo sets it to `true` for both adapters so the final chunk
+carries usage, and forwards that chunk untouched. A client's explicit `stream_options` always wins.
+A *Responses* stream needs no flag: the API reports usage in its terminal event unconditionally, so
+the proxy injects nothing into a Responses body — the event stream (`event:` + `data:` frames ending
+with `response.completed`, not chat's `data: [DONE]`) passes through frame for frame, with only the
+`model` fields rewritten.
 
 ### Request limits and timeouts
 
@@ -429,9 +445,10 @@ The two `debug_*` knobs are edited on the [Debug screen](#request-debugging), no
 
 ### Request debugging
 
-The Debug screen can turn El Pulpo into a recorder: while **debug mode** is on, every routed chat
-request is stored with **the context the client sent and the answer that came back**, so a model
-behaving strangely can be read about instead of guessed at. It is **off by default** and costs
+The Debug screen can turn El Pulpo into a recorder: while **debug mode** is on, every routed request
+— on either completion endpoint — is stored with **the context the client sent and the answer that
+came back**, so a model behaving strangely can be read about instead of guessed at. It is **off by
+default** and costs
 nothing when off: no capture, no write, an empty table. And turning it on is a decision with an
 end: recording runs inside a **time limit**, so a switch left behind cannot fill the database.
 
@@ -468,11 +485,13 @@ end: recording runs inside a **time limit**, so a switch left behind cannot fill
 
 Every request that is routed to a server writes one row when it terminates — success, upstream
 error, upstream timeout or cancellation. Requests rejected before routing (unknown model, `413`,
-`429`) are not usage rows; they are counted and logged as their own `chat request` line at `WARN`,
-with a `reason`. Every routed request emits exactly one `chat request` line as well — `INFO` when
+`429`) are not usage rows; they are counted and logged as their own request line at `WARN`, with a
+`reason` — `chat request` on the chat endpoint, `responses request` on the Responses one. Every
+routed request emits exactly one request line as well — `INFO` when
 the client got an answer, `ERROR` on an upstream failure — carrying host, server, published model,
-`stream`, status, HTTP status, latency, queue wait, token counts and `ttft_ms` on streams, so the
-log and the usage table say the same thing about what reached a server. Failure means failure: an
+`stream`, status, HTTP status, latency, queue wait, token counts and `ttft_ms` on streams (and the
+`endpoint` on Responses lines), so the log and the usage table say the same thing about what reached
+a server. Failure means failure: an
 `ERROR` line is something El Pulpo or its fleet got wrong, never a client asking for a model that is
 not published or hitting a concurrency limit — the two startup warnings about unset credentials are
 `WARN` for the same reason. Credentials never appear in either log or table.
@@ -482,10 +501,10 @@ not published or hitting a concurrency limit — the two startup warnings about 
 | `timestamp` | when the request was received (UTC; displayed in the server timezone) |
 | `host`, `server` | the ids it was routed to |
 | `model` | published model id |
-| `endpoint` | `chat` in v1 |
+| `endpoint` | `chat` \| `responses` — the endpoint the client called |
 | `status` | `ok` \| `upstream_error` \| `upstream_timeout` \| `cancelled` |
 | `http_status` | status returned to the client |
-| `tokens_in`, `tokens_out` | prompt and completion tokens |
+| `tokens_in`, `tokens_out` | prompt and completion tokens (Responses: `input_tokens` / `output_tokens`) |
 | `tokens_cached` | subset of `tokens_in`, when reported |
 | `tokens_reasoning` | subset of `tokens_out`, when reported |
 | `estimated` | `true` when El Pulpo had to count tokens itself |
@@ -707,6 +726,10 @@ used throughout.
 | 56 | a host, a server, a route, a price entry and a settings value are each refused by the rules, a mutation carries a hash that is no longer current, and one arrives without the CSRF marker | nothing is written and every one answers a 4xx carrying the text the operator is shown — `{"violations":[{"path","line","msg"}…]}` per field, or `{"error":"…"}` for a rule no field carries — never a `200` for a change that did not happen; the message is rendered under the button that was clicked, by the one same-origin script the pages link, and no screen carries inline JavaScript or an `hx-on:` attribute, so CSP stays `default-src 'self'` with neither `unsafe-inline` nor `unsafe-eval`; a form on screen never posts to an action that does not answer it |
 | 57 | debug mode is switched on from the Debug screen — once with no filter, once filtered to one model — while buffered, streamed and filtered-out requests run against the fleet | with the switch off nothing is recorded; on, each selected request is stored with its context and its answer (the stream as its frames, merged back when read as messages), the filtered-out model stays unrecorded, and an alias routed to the filtered member is recorded; the screen lists the recordings and shows the selected one as messages (markdown, structured content as JSON, an embedded image rendered, tool calls shown) or raw; the switch and filter survive a restart; `clear` empties the recordings and nothing else; a markerless POST changes neither settings nor recordings |
 | 58 | debug mode is turned on with a time limit — by name, and once without naming one | an unnamed window defaults to the shortest offer (15 minutes) and an unknown duration is refused naming its field; inside the window requests are recorded and the status line names the deadline; past the deadline nothing is recorded, screen and API alike read off, and the switch resets itself shortly after; applying again restarts the window at its chosen length |
+| 59 | `POST /v1/responses`, `model: deepseek-v4-flash-vllm@minion1`, non-streaming | the upstream sees `model: deepseek-v4-flash` and the client's `input`/`previous_response_id`/`temperature` untouched; the response's `model` is the published id; a row exists with `endpoint: responses`, `host: minion1, server: vllm, status: ok` and the upstream's `input_tokens`/`output_tokens`; the log line is `msg="responses request"` |
+| 60 | the same request with `stream: true` | the typed `event:`/`data:` frames pass through whole (ending `response.completed`, no `data: [DONE]`), the `model` is rewritten wherever it sits — inside the `response` snapshots too; the proxy injects no `stream_options` (usage arrives in the terminal event regardless), a client's own `stream_options` is forwarded verbatim; the row carries the terminal event's usage and `ttft_ms > 0`, and where usage is absent the estimate takes its place |
+| 61 | `POST /v1/responses` aimed at a route alias | the member's server sees the base model name, the response object carries the alias back, and the usage row names the serving member — routing through an alias is the chat endpoint's behaviour, unchanged |
+| 62 | `POST /v1/responses` for a name the fleet does not know; an upstream answering the endpoint with a `4xx`; `GET /v1/responses/{id}`; a request without the proxy token when one is set | `404 model_not_found` with the same reasons as chat; the upstream's `4xx` status and body pass through unchanged and the row is `ok` — El Pulpo does not probe per-endpoint availability; retrieval is `404 unsupported_endpoint`; the tokenless request is `401`, while the upstream always sees its own `auth_token`, never the client's |
 
 ## Out of scope (v1)
 
@@ -718,7 +741,9 @@ measured latency, only the operator's static cost per member · no per-route con
 (`max_concurrency` stays per server) · no name resolution beyond a published id or a route alias:
 a bare base model name is still unknown ·
 direct per-server routes and any other host/server passthrough · per-client API keys and
-per-client attribution in stats · embeddings endpoints · Ollama native `/api/chat`, `/api/generate`,
+per-client attribution in stats · embeddings endpoints · the Responses API *store* endpoints
+(`GET /v1/responses/{id}`, its `stream` parameter, cancellation and input-items listing — the proxy
+routes `POST /v1/responses` but stores nothing) · Ollama native `/api/chat`, `/api/generate`,
 `/api/embeddings` · Anthropic `/v1/messages` · response caching · multi-instance or HA deployments ·
 TLS termination at El Pulpo (reverse proxy assumed) · **any request to a host outside the configured
 fleet**, price catalogue updates included · upstream certificate verification (see
@@ -786,7 +811,8 @@ follows, and the acceptance suite encodes these readings.
 12. **Duration settings have a 1s floor**; `total_timeout` and `retention_days` additionally accept
     `0`/`off` as "disabled". Acceptance timeouts therefore run at 1s settings against ≥2.5s stalls.
 13. **CSRF uses cookie `elpulpo_csrf` and header `X-CSRF-Token`** on every dashboard mutation.
-14. **Unknown-but-known-shaped OpenAI paths under `/v1`** (e.g. `/v1/embeddings`) answer
+14. **Unknown-but-known-shaped OpenAI paths under `/v1`** (e.g. `/v1/embeddings`, or the Responses
+    store subpaths like `GET /v1/responses/{id}`) answer
     `404 unsupported_endpoint`; everything else is a plain 404.
 15. **`ttft_ms` is never 0 once a first frame reached the client**: a sub-millisecond first byte is
     recorded as 1, so "streaming ⇒ `ttft_ms > 0`" holds without a timer artifact.

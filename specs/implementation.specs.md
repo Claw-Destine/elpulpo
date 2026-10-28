@@ -74,12 +74,17 @@ proxy asks it, the dashboard renders what it says, and neither reimplements the 
 
 ## Request path
 
+The same path serves both client-facing completion endpoints — `POST /v1/chat/completions` and
+`POST /v1/responses` — one handler pair sharing every step; what differs is the dialect: which
+upstream path a request is aimed at, where the response's `model` and `usage` sit in the JSON, and
+the chat-only `include_usage` injection.
+
 1. `http.MaxBytesReader` at `max_request_size` — `413` before any parsing or routing, so no usage row
    and no concurrency slot (scenario 29).
 2. The body must parse as a JSON object; anything else is `400` before routing. Managed fields
-   (`model`, `stream`, `stream_options`) are lifted into a struct and the remainder kept as
-   `map[string]json.RawMessage`, re-emitted verbatim — tool schemas, multimodal payloads and any
-   future OpenAI field survive untouched.
+   (`model`, `stream`) are lifted into a struct and the remainder kept as
+   `map[string]json.RawMessage`, re-emitted verbatim — tool schemas, multimodal payloads,
+   `previous_response_id` and any future OpenAI field survive untouched.
 3. Resolve the asked name: exact published id from the catalogue the health loop maintains, or — when
    the name is a route alias of the live config document — the member `balancer.Selector` picks.
    Otherwise `404 model_not_found` with the matching `reason` (`not_configured` for a name that is
@@ -89,27 +94,36 @@ proxy asks it, the dashboard renders what it says, and neither reimplements the 
 3b. The chosen published id's in-flight counter is raised **at admission**, before the concurrency
    slot, and released by the `defer` that spans the request: the next concurrent request must see
    this one, or a burst would pile every request onto the same member.
-4. Rewrite `model` to the base model name; set `stream_options.include_usage` only when
-   `stream: true` and the client omitted it. The outgoing `Authorization` header is the server's
+4. Rewrite `model` to the base model name; set `stream_options.include_usage` only for a chat stream
+   when `stream: true` and the client omitted it — a Responses stream reports usage in its terminal
+   event without any flag, so a Responses body gets no injected fields at all. The outgoing
+   `Authorization` header is the server's
    `auth_token`, never the client's proxy token — the inbound header is dropped before forwarding,
    which is what scenario 43 asserts.
 5. **Concurrency slot**: `select` over the per-server semaphore, `queue_timeout` and
    `r.Context().Done()`; a server that went down while queued yields `503`. The slot is released by a
    `defer` spanning the whole streamed body, which is what makes scenario 8 pass.
 6. The response `model` is rewritten to the name the client asked for — its published id, or the
-   alias it balanced through — in the JSON body and in every SSE `data:` frame containing `"model"`.
+   alias it balanced through — in the JSON body and in every SSE `data:` frame containing it: at the
+   top level for chat (and older Responses servers), or inside the frame's `response` snapshot for
+   the Responses dialect.
    Frames are read line-delimited; `event:`, comment lines and
    `data: [DONE]` pass through untouched; each frame is flushed as written. Nothing is buffered and
-   the parse cost is confined to frames carrying that key.
-7. Usage comes from the last usage-bearing frame or body; absent usage means an estimate plus the
-   `estimated` flag. `ttft_ms` is recorded at the first frame written.
+   the parse cost is confined to frames carrying those keys.
+7. Usage comes from the last usage-bearing frame or body, read under either spelling —
+   `prompt_tokens`/`completion_tokens` or `input_tokens`/`output_tokens`, each with its
+   `*_tokens_details` subsets; a JSON `null` is not usage. Absent usage means an estimate plus the
+   `estimated` flag; for Responses bodies the estimate counts the visible text — output content
+   parts buffered, `delta` strings streamed. `ttft_ms` is recorded at the first frame written.
 8. The row is handed to the writer queue, not to SQLite, from the request goroutine. When debug mode
    selects the request — decided once at routing time (settings on, and the model filter matching
    what was asked or where it landed) — the recorder has been collecting the request body verbatim
    and the response (the upstream body, or its SSE frames as they are written) and is handed to the
    debug writer's queue at the same point. Off, or past the window's deadline, the whole path is one
    settings check and a nil test.
-9. The same terminal point logs exactly one `chat request` line: the row's host/server/model/status
+9. The same terminal point logs exactly one request line, its `msg` naming the endpoint —
+   `chat request` on chat, `responses request` on Responses (where the line also carries
+   `endpoint=responses`): the row's host/server/model/status
    plus latency, `wait_ms` (time queued for a slot), token counts, `estimated`, and `ttft_ms` on
    streams; a request that came through a route adds `route=<alias>`, so the row and the log name the
    member that served and the name it was asked for. `ERROR` on `upstream_error`/`upstream_timeout`,
@@ -423,7 +437,10 @@ the real listener against fake upstreams built on `httptest`:
 
 - Ollama-shaped (`/api/tags` + `/v1/chat/completions`) and OpenAI-shaped (`/v1/models`) fakes with
   knobs for a fixed model list, first-byte delay, mid-stream stall, missing `usage`, `500`, and
-  held-open streams for disconnects. Every fake records the headers it received: scenario 43 is the
+  held-open streams for disconnects. Every fake also serves `POST /v1/responses` in the OpenAI
+  Responses shape — a response object buffered, an `event:`/`data:` stream with typed envelopes
+  ending `response.completed` and no `data: [DONE]` — sharing the same knobs. Every fake records the
+  headers it received: scenario 43 is the
   credential-forwarding assertion, and it is the test that catches the one bug class that matters here
   — leaking the client's proxy token upstream, or failing to send the server's own.
 - Scenario 44 asserts the CORS asymmetry in both directions; 45 and 46 cover the hosts-only config and

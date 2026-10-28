@@ -1,7 +1,9 @@
 // Package proxy is the client-facing OpenAI-compatible proxy: exact-id and
 // load-balancer routing, model rewrite in both directions, unbuffered SSE
 // pass-through, per-server concurrency slots, usage capture and — when debug
-// mode is on — recordings of the contexts and responses it routes.
+// mode is on — recordings of the contexts and responses it routes. It serves
+// both OpenAI completions dialects — /v1/chat/completions and /v1/responses —
+// which differ only in where the interesting fields sit in the JSON.
 package proxy
 
 import (
@@ -60,7 +62,7 @@ func WriteError(w http.ResponseWriter, status int, code, typ, msg, reason string
 	_ = json.NewEncoder(w).Encode(b)
 }
 
-// Proxy serves /v1/models and /v1/chat/completions.
+// Proxy serves /v1/models, /v1/chat/completions and /v1/responses.
 type Proxy struct {
 	deps Deps
 
@@ -70,25 +72,43 @@ type Proxy struct {
 	RejBusy     atomic.Int64
 }
 
+// Endpoints, named as they appear in the usage row's endpoint column.
+const (
+	EndpointChat      = "chat"      // POST /v1/chat/completions
+	EndpointResponses = "responses" // POST /v1/responses
+)
+
 // New builds the proxy.
 func New(deps Deps) *Proxy { return &Proxy{deps: deps} }
 
 // call carries one request from the front door to its terminal log line: what
 // the client asked for, where the request was aimed, and what went wrong if
-// anything did. Every request that reaches Chat ends in exactly one
-// "chat request" line — routed ones via finish, which also writes the usage
-// row, rejections via rejected, which writes none.
+// anything did. Every request that reaches Chat or Responses ends in exactly
+// one line — chat request on the chat endpoint, responses request on the
+// other — routed ones via finish, which also writes the usage row, rejections
+// via rejected, which writes none.
 type call struct {
-	start  time.Time
-	remote string
-	asked  string // model id exactly as the client spelled it
-	stream bool
-	target *health.Target // nil until routing has picked one
-	route  string         // load-balancer alias it came through, "" for a direct id
-	reply  string         // the model name the response carries: what was asked
-	waitMs int64          // time spent queued for a concurrency slot
-	err    error          // underlying failure, when there was one
-	rec    *recorder      // debug capture sink, nil unless the settings selected it
+	start    time.Time
+	remote   string
+	endpoint string // EndpointChat or EndpointResponses — which front door it came in
+	asked    string // model id exactly as the client spelled it
+	stream   bool
+	target   *health.Target // nil until routing has picked one
+	route    string         // load-balancer alias it came through, "" for a direct id
+	reply    string         // the model name the response carries: what was asked
+	waitMs   int64          // time spent queued for a concurrency slot
+	err      error          // underlying failure, when there was one
+	rec      *recorder      // debug capture sink, nil unless the settings selected it
+}
+
+// logMsg names the terminal log line by the request's dialect: a grep for
+// one message sees exactly one endpoint's traffic. The line is otherwise
+// the same shape, and the usage row names the endpoint too.
+func (c *call) logMsg() string {
+	if c.endpoint == EndpointResponses {
+		return "responses request"
+	}
+	return "chat request"
 }
 
 // liveConfig is the config document a request routes against. In-flight
@@ -141,11 +161,14 @@ func (p *Proxy) rejected(c *call, httpStatus int, reason string, extra ...any) {
 		"status", "rejected", "http_status", httpStatus, "reason", reason,
 		"latency_ms", time.Since(c.start).Milliseconds(),
 	}
+	if c.endpoint != EndpointChat {
+		args = append(args, "endpoint", c.endpoint)
+	}
 	if httpStatus >= http.StatusInternalServerError {
-		p.deps.Log.Error("chat request", append(args, extra...)...)
+		p.deps.Log.Error(c.logMsg(), append(args, extra...)...)
 		return
 	}
-	p.deps.Log.Warn("chat request", append(args, extra...)...)
+	p.deps.Log.Warn(c.logMsg(), append(args, extra...)...)
 }
 
 // Models serves GET /v1/models: published ids of healthy servers plus the
@@ -193,14 +216,34 @@ func (p *Proxy) routeAliases() []string {
 
 // Chat serves POST /v1/chat/completions.
 func (p *Proxy) Chat(w http.ResponseWriter, r *http.Request) {
+	p.frontDoor(w, r, EndpointChat)
+}
+
+// Responses serves POST /v1/responses — the OpenAI Responses API. Routing,
+// slots, limits and recording are the same machinery as Chat; what differs is
+// the completions dialect: `input` instead of `messages`, usage arriving in
+// the stream's terminal event without any opt-in flag, and the interesting
+// fields of a response living under different JSON keys. Everything else —
+// the body beyond the managed `model` field, and every event the server
+// streams — passes through untouched, so server-side state
+// (previous_response_id, store, background) stays between the client and its
+// server; El Pulpo is not a response store and proxies only the POST itself,
+// never retrieval or cancellation by id.
+func (p *Proxy) Responses(w http.ResponseWriter, r *http.Request) {
+	p.frontDoor(w, r, EndpointResponses)
+}
+
+// frontDoor is the shared shape of both POST endpoints: method check, size
+// gate, then routing.
+func (p *Proxy) frontDoor(w http.ResponseWriter, r *http.Request, endpoint string) {
 	if r.Method != http.MethodPost {
 		WriteError(w, http.StatusMethodNotAllowed, "unsupported_endpoint", "invalid_request_error",
-			"POST /v1/chat/completions only", "")
+			"POST /v1/"+endpoint+" only", "")
 		return
 	}
 	start := time.Now()
 	set := p.deps.Settings.Get()
-	c := &call{start: start, remote: r.RemoteAddr}
+	c := &call{start: start, remote: r.RemoteAddr, endpoint: endpoint}
 
 	// 1. Size gate before any parsing or routing: no usage row and no
 	// concurrency slot is taken.
@@ -348,7 +391,7 @@ func (p *Proxy) finish(c *call, status string, httpStatus int,
 	lat := time.Since(c.start).Milliseconds()
 	p.deps.Writer.Submit(usage.Row{
 		TsMs: c.start.UnixMilli(), HostID: t.HostID, ServerID: t.ServerID, Model: t.Published,
-		Endpoint: "chat", Status: status, HTTPStatus: httpStatus,
+		Endpoint: c.endpoint, Status: status, HTTPStatus: httpStatus,
 		TokensIn: in, TokensOut: out, TokensCached: cached, TokensReasoning: reasoning,
 		Estimated: estimated, LatencyMs: lat, TTFTMs: ttft,
 	})
@@ -365,6 +408,9 @@ func (p *Proxy) finish(c *call, status string, httpStatus int,
 		"tokens_cached", cached, "tokens_reasoning", reasoning,
 		"estimated", estimated,
 	}
+	if c.endpoint != EndpointChat {
+		attrs = append(attrs, "endpoint", c.endpoint)
+	}
 	if c.route != "" {
 		// Which member served it is the row; which alias asked is the route.
 		attrs = append(attrs, "route", c.route)
@@ -376,10 +422,10 @@ func (p *Proxy) finish(c *call, status string, httpStatus int,
 		attrs = append(attrs, "err", c.err)
 	}
 	if status == usage.StatusUpstreamError || status == usage.StatusUpstreamTimeout {
-		p.deps.Log.Error("chat request", attrs...)
+		p.deps.Log.Error(c.logMsg(), attrs...)
 		return
 	}
-	p.deps.Log.Info("chat request", attrs...)
+	p.deps.Log.Info(c.logMsg(), attrs...)
 }
 
 func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
@@ -398,7 +444,9 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
 	}
 
 	// Managed-field rewrite: model becomes the base name; include_usage is
-	// added only for streams that did not set stream_options themselves.
+	// added only for chat streams that did not set stream_options themselves.
+	// A Responses stream needs no flag: its terminal event carries usage
+	// unconditionally, so the body beyond `model` passes through untouched.
 	out := make(map[string]json.RawMessage, len(fields))
 	for k, v := range fields {
 		out[k] = v
@@ -406,7 +454,7 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
 	if m, err := json.Marshal(t.Base); err == nil {
 		out["model"] = m
 	}
-	if stream {
+	if stream && c.endpoint != EndpointResponses {
 		if _, ok := out["stream_options"]; !ok {
 			out["stream_options"] = json.RawMessage(`{"include_usage":true}`)
 		}
@@ -424,7 +472,11 @@ func (p *Proxy) dispatch(w http.ResponseWriter, r *http.Request, c *call,
 		upCtx, cancel = context.WithTimeout(upCtx, set.TotalTimeout)
 		defer cancel()
 	}
-	url := fmt.Sprintf("%s://%s:%d/v1/chat/completions", scheme, addr, port)
+	upPath := "/v1/chat/completions"
+	if c.endpoint == EndpointResponses {
+		upPath = "/v1/responses"
+	}
+	url := fmt.Sprintf("%s://%s:%d%s", scheme, addr, port, upPath)
 	req, err := http.NewRequestWithContext(upCtx, http.MethodPost, url, strings.NewReader(string(upBody)))
 	if err != nil {
 		p.rejected(c, http.StatusInternalServerError, "upstream_request_build_failed", "err", err)
@@ -520,8 +572,11 @@ func isTimeoutErr(err error) bool {
 	return strings.Contains(err.Error(), "timeout awaiting response headers")
 }
 
-// upstreamUsage is the OpenAI usage object including the optional detail
-// subsets: cached ⊆ prompt tokens, reasoning ⊆ completion tokens.
+// upstreamUsage is an OpenAI usage object in either completions dialect: the
+// chat spelling (prompt_tokens/completion_tokens) and the Responses spelling
+// (input_tokens/output_tokens), each with its optional detail subsets:
+// cached ⊆ input tokens, reasoning ⊆ output tokens. A usage object carrying
+// neither known field parses as present-but-zero, exactly as before.
 type upstreamUsage struct {
 	Prompt     int64
 	Completion int64
@@ -529,28 +584,212 @@ type upstreamUsage struct {
 	Reasoning  int64
 }
 
-func parseUsage(raw json.RawMessage) (upstreamUsage, bool) {
+// usageFields is one usage object's spelling of a count pair.
+func usageFields(raw json.RawMessage) (in, out, cached, reasoning int64) {
 	var u struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
+		PromptTokens     *int64 `json:"prompt_tokens"`
+		CompletionTokens *int64 `json:"completion_tokens"`
+		InputTokens      *int64 `json:"input_tokens"`
+		OutputTokens     *int64 `json:"output_tokens"`
 		PromptDetails    *struct {
 			CachedTokens int64 `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
+		InputDetails *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
 		CompletionDetails *struct {
 			ReasoningTokens int64 `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
+		OutputDetails *struct {
+			ReasoningTokens int64 `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
 	}
-	if err := json.Unmarshal(raw, &u); err != nil {
-		return upstreamUsage{}, false
+	if json.Unmarshal(raw, &u) != nil {
+		return
 	}
-	out := upstreamUsage{Prompt: u.PromptTokens, Completion: u.CompletionTokens}
+	pick := func(a, b *int64) int64 {
+		if a != nil {
+			return *a
+		}
+		if b != nil {
+			return *b
+		}
+		return 0
+	}
+	in = pick(u.PromptTokens, u.InputTokens)
+	out = pick(u.CompletionTokens, u.OutputTokens)
 	if u.PromptDetails != nil {
-		out.Cached = u.PromptDetails.CachedTokens
+		cached = u.PromptDetails.CachedTokens
+	} else if u.InputDetails != nil {
+		cached = u.InputDetails.CachedTokens
 	}
 	if u.CompletionDetails != nil {
-		out.Reasoning = u.CompletionDetails.ReasoningTokens
+		reasoning = u.CompletionDetails.ReasoningTokens
+	} else if u.OutputDetails != nil {
+		reasoning = u.OutputDetails.ReasoningTokens
 	}
-	return out, true
+	return
+}
+
+func parseUsage(raw json.RawMessage) (upstreamUsage, bool) {
+	// A JSON null is not a usage object: the Responses API serializes
+	// "usage":null while a response is still in progress, and a chat chunk
+	// may carry one too. Counting it as present would suppress the token
+	// estimate with a row of zeros.
+	var probe any
+	if json.Unmarshal(raw, &probe) != nil || probe == nil {
+		return upstreamUsage{}, false
+	}
+	in, out, cached, reasoning := usageFields(raw)
+	return upstreamUsage{Prompt: in, Completion: out, Cached: cached, Reasoning: reasoning}, true
+}
+
+// usageFromDoc finds the usage object of a buffered response in either
+// dialect: at the top level for a chat completion (and a Responses body
+// served by a server that kept the flat spelling), or inside the response
+// object of a Responses body.
+func usageFromDoc(doc map[string]json.RawMessage) (upstreamUsage, bool) {
+	if raw, ok := doc["usage"]; ok {
+		return parseUsage(raw)
+	}
+	if ro, ok := doc["response"]; ok {
+		var resp map[string]json.RawMessage
+		if json.Unmarshal(ro, &resp) == nil && resp != nil {
+			if raw, ok := resp["usage"]; ok {
+				return parseUsage(raw)
+			}
+		}
+	}
+	return upstreamUsage{}, false
+}
+
+// rewriteResponsesModel is the Responses-dialect mirror of the buffered chat
+// rewrite: the response object carries model at its top level (older
+// servers) or inside a response sub-object (newer ones); whichever is
+// present is set to the name the client asked for. Reports whether anything
+// changed, so untouched bodies are forwarded byte for byte.
+func rewriteResponsesModel(doc map[string]json.RawMessage, published string) bool {
+	pub, err := json.Marshal(published)
+	if err != nil {
+		return false
+	}
+	changed := false
+	if _, ok := doc["model"]; ok {
+		doc["model"] = pub
+		changed = true
+	}
+	if ro, ok := doc["response"]; ok {
+		var resp map[string]json.RawMessage
+		if json.Unmarshal(ro, &resp) == nil && resp != nil {
+			if _, ok := resp["model"]; ok {
+				resp["model"] = pub
+				if nb, err := json.Marshal(resp); err == nil {
+					doc["response"] = nb
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// responsesCompletionChars measures the visible output text of a buffered
+// Responses body for the fallback estimate: message and refusal content on
+// the output items.
+func responsesCompletionChars(doc map[string]json.RawMessage) int {
+	raw, ok := doc["output"]
+	if !ok {
+		return 0
+	}
+	var items []struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &items) != nil {
+		return 0
+	}
+	total := 0
+	for _, it := range items {
+		for _, part := range it.Content {
+			if part.Type == "output_text" || part.Type == "refusal" {
+				total += len(part.Text)
+			}
+		}
+	}
+	return total
+}
+
+// rewriteResponsesFrame rewrites the model of a Responses-API SSE data frame
+// — the envelope's top level, or its embedded response object, which is
+// where the model lives on response.created and the terminal events — and
+// captures usage and streamed text on the way through. SSE syntax stays
+// untouched; [DONE] and non-data lines pass through verbatim.
+func rewriteResponsesFrame(line []byte, published string, u *upstreamUsage, haveUsage *bool, outChars *int) []byte {
+	trimmed := strings.TrimRight(string(line), "\r\n")
+	if !strings.HasPrefix(trimmed, "data:") {
+		return line
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return line
+	}
+	if !strings.Contains(payload, `"usage"`) && !strings.Contains(payload, `"model"`) &&
+		!strings.Contains(payload, `"response"`) && !strings.Contains(payload, `"delta"`) {
+		return line
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal([]byte(payload), &doc) != nil || doc == nil {
+		return line
+	}
+	changed := false
+	if _, ok := doc["model"]; ok {
+		pub, _ := json.Marshal(published)
+		doc["model"] = pub
+		changed = true
+	}
+	if ro, ok := doc["response"]; ok {
+		// The event carries a snapshot of the response object: usage lives
+		// there on the terminal events, and so does its model.
+		var resp map[string]json.RawMessage
+		if json.Unmarshal(ro, &resp) == nil && resp != nil {
+			if raw, ok := resp["usage"]; ok {
+				if parsed, ok2 := parseUsage(raw); ok2 {
+					*u = parsed
+					*haveUsage = true
+				}
+			}
+			if _, ok := resp["model"]; ok {
+				pub, _ := json.Marshal(published)
+				resp["model"] = pub
+				if nb, err := json.Marshal(resp); err == nil {
+					doc["response"] = nb
+					changed = true
+				}
+			}
+		}
+	}
+	if raw, ok := doc["usage"]; ok {
+		if parsed, ok2 := parseUsage(raw); ok2 {
+			*u = parsed
+			*haveUsage = true
+		}
+	}
+	if raw, ok := doc["delta"]; ok {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			*outChars += len(s)
+		}
+	}
+	if !changed {
+		return line
+	}
+	nb, err := json.Marshal(doc)
+	if err != nil {
+		return line
+	}
+	return []byte("data: " + string(nb) + "\n")
 }
 
 // estimateTokens is the character heuristic used when upstream reports no
@@ -585,19 +824,28 @@ func (p *Proxy) respondBuffered(w http.ResponseWriter, r *http.Request, c *call,
 	c.rec.setBody(body)
 	// Response identity: the model field is rewritten back to the name the
 	// client asked for — its published id, or the alias it balanced through.
+	// Usage and completion text are read wherever the dialect puts them.
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(body, &doc) == nil && doc != nil {
-		if _, ok := doc["model"]; ok {
+		changed := false
+		if c.endpoint == EndpointResponses {
+			changed = rewriteResponsesModel(doc, c.reply)
+		} else if _, ok := doc["model"]; ok {
 			pub, _ := json.Marshal(c.reply)
 			doc["model"] = pub
+			changed = true
+		}
+		if changed {
 			if nb, merr := json.Marshal(doc); merr == nil {
 				body = nb
 			}
 		}
-		if raw, ok := doc["usage"]; ok {
-			u, haveUsage = parseUsage(raw)
+		u, haveUsage = usageFromDoc(doc)
+		if c.endpoint == EndpointResponses {
+			outChars = responsesCompletionChars(doc)
+		} else {
+			outChars = completionChars(doc)
 		}
-		outChars = completionChars(doc)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
@@ -638,12 +886,18 @@ func completionChars(doc map[string]json.RawMessage) int {
 
 // pumpStream proxies SSE chunk by chunk, flushed per chunk, never buffered.
 // The model field of data frames carrying it is rewritten; usage comes from
-// the last usage-bearing frame; ttft is the first frame written.
+// the last usage-bearing frame; ttft is the first frame written. Which
+// rewrite reads a frame — and where usage and text live inside it — is the
+// endpoint's dialect.
 func (p *Proxy) pumpStream(w http.ResponseWriter, r *http.Request, c *call,
 	t *health.Target, resp *http.Response, set *config.Settings, rawBody []byte) {
 
 	start := c.start
 	flusher, _ := w.(http.Flusher)
+	rewrite := rewriteFrame
+	if c.endpoint == EndpointResponses {
+		rewrite = rewriteResponsesFrame
+	}
 
 	// One watchdog guards both liveness edges: it ends the stream when the
 	// client disconnects and when the gap between two chunks exceeds
@@ -750,7 +1004,7 @@ func (p *Proxy) pumpStream(w http.ResponseWriter, r *http.Request, c *call,
 				ttft = &ms
 			}
 			c.rec.appendFrame(line)
-			frame := rewriteFrame(line, c.reply, &u, &haveUsage, &outChars)
+			frame := rewrite(line, c.reply, &u, &haveUsage, &outChars)
 			if _, werr := w.Write(frame); werr != nil {
 				endStatus = usage.StatusCancelled
 				return

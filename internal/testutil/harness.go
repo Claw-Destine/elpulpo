@@ -300,6 +300,13 @@ func (h *Harness) Chat(token string, payload map[string]any) (int, string) {
 	return h.Post("/v1/chat/completions", h.token(token), bytes.NewReader(b))
 }
 
+// Responses posts a /v1/responses request and returns status + raw body.
+func (h *Harness) Responses(token string, payload map[string]any) (int, string) {
+	h.T.Helper()
+	b, _ := json.Marshal(payload)
+	return h.Post("/v1/responses", h.token(token), bytes.NewReader(b))
+}
+
 // token falls back to the configured proxy token when none is given.
 func (h *Harness) token(explicit ...string) string {
 	if len(explicit) > 0 && explicit[0] != "" {
@@ -389,8 +396,19 @@ func ModelNames(ids []string) string { return "[" + strings.Join(ids, " ") + "]"
 // payloads seen, and any transport error string.
 func (h *Harness) ChatStream(token string, payload map[string]any, onChunk func(string) bool) (int, []string, string) {
 	h.T.Helper()
+	return h.streamTo("/v1/chat/completions", token, payload, onChunk)
+}
+
+// ResponsesStream is ChatStream against POST /v1/responses.
+func (h *Harness) ResponsesStream(token string, payload map[string]any, onChunk func(string) bool) (int, []string, string) {
+	h.T.Helper()
+	return h.streamTo("/v1/responses", token, payload, onChunk)
+}
+
+func (h *Harness) streamTo(path, token string, payload map[string]any, onChunk func(string) bool) (int, []string, string) {
+	h.T.Helper()
 	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, h.URL("/v1/chat/completions"), bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, h.URL(path), bytes.NewReader(b))
 	if err != nil {
 		h.T.Fatalf("stream req: %v", err)
 	}

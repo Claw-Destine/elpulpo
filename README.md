@@ -10,9 +10,11 @@ clients and your own inference boxes and does two jobs:
   model catalogue to name in your clients — including load-balanced
   aliases that spread one model across several machines.
 
-Clients address El Pulpo with the OpenAI chat API; El Pulpo rewrites the
-model field to the base name the serving process actually understands,
-forwards the request, and streams the answer through unbuffered.
+Clients address El Pulpo with the OpenAI chat API — both of its
+completions dialects, `/v1/chat/completions` and `/v1/responses`; El
+Pulpo rewrites the model field to the base name the serving process
+actually understands, forwards the request, and streams the answer
+through unbuffered.
 
 ![El Pulpo dashboard](assets/dashboard.gif)
 
@@ -157,13 +159,26 @@ curl http://localhost:8080/v1/chat/completions -H "Authorization: Bearer $TOKEN"
   "messages": [{"role": "user", "content": "hello"}],
   "stream": true
 }'
+
+# the OpenAI Responses API is proxied too, with the same requestable names
+curl http://localhost:8080/v1/responses -H "Authorization: Bearer $TOKEN" -d '{
+  "model": "qwen3.8:27b-ollama@minion1",
+  "input": "hello",
+  "stream": true
+}'
 ```
 
 The inbound `Authorization` carries the proxy token and is dropped
 before forwarding; upstream credentials come from the server's own
-`auth_token`. Streams are flushed chunk by chunk; `stream_options`
-defaults to `{"include_usage": true}` on streams unless the client set
-it, so usage gets recorded either way. Errors are OpenAI-shaped with a
+`auth_token`. Streams are flushed chunk by chunk; on chat streams
+`stream_options` defaults to `{"include_usage": true}` unless the
+client set it, so usage gets recorded either way — a Responses stream
+carries usage in its terminal event unconditionally, so the proxy
+injects nothing there. `POST /v1/responses` is otherwise a transparent
+pipe: `previous_response_id`, `store` and the rest stay between the
+client and its server, and El Pulpo is not a response store — retrieval
+by id (`GET /v1/responses/{id}`) is not proxied. Errors are
+OpenAI-shaped with a
 `reason` (`model_not_found` → `not_configured` / `not_available`,
 `request_too_large`, `server_busy`, `server_unavailable`,
 `upstream_timeout`, `upstream_error`, `unsupported_endpoint`). The `/v1`
@@ -208,14 +223,18 @@ requestable, price entries only price it.
 
 Everything is structured `slog` text on stderr, filtered by
 `ELPULPO_LOG_LEVEL`. Every request that reaches
-`/v1/chat/completions` ends in exactly one line, `msg="chat request"`:
+`/v1/chat/completions` ends in exactly one line, `msg="chat request"`,
+and every request that reaches `/v1/responses` in one line,
+`msg="responses request"`:
 
 ```
 level=INFO msg="chat request" remote=127.0.0.1:42974 host=minion1 server=ollama model=qwen3.8:27b-ollama@minion1 stream=true status=ok http_status=200 latency_ms=812 wait_ms=0 tokens_in=111 tokens_out=42 tokens_cached=0 tokens_reasoning=0 estimated=false ttft_ms=140
+level=INFO msg="responses request" remote=127.0.0.1:42976 host=minion1 server=vllm model=deepseek-v4-flash-vllm@minion1 stream=false status=ok http_status=200 latency_ms=312 wait_ms=0 tokens_in=111 tokens_out=42 tokens_cached=0 tokens_reasoning=0 estimated=false endpoint=responses
 ```
 
 `status` is the usage-row status (`ok`, `cancelled`, `upstream_error`,
-`upstream_timeout`), so `grep 'msg="chat request"'` and a `SELECT` on the
+`upstream_timeout`), so `grep 'msg="chat request"\|msg="responses request"'`
+and a `SELECT` on the
 usage table agree on what reached a server: one line per row. A request
 turned away before routing — bad JSON, missing `model`, `413`, unknown
 model, `429` after the queue timeout, a server that went down while
@@ -281,8 +300,9 @@ not a record of other people's typos.
 - **Debug** — the request recorder, **off by default**. The top of the screen
   turns it on **for a while** — 15 minutes (the default), an hour, a day, or
   until switched off — and optionally for one model only (a published id or
-  a route alias). While the window is open, every routed chat request is
-  stored with the context the client sent and the answer that came back.
+  a route alias). While the window is open, every routed request — on
+  either completion endpoint — is stored with the context the client sent
+  and the answer that came back.
   A forgotten switch cannot fill the database: the recorder stops at its
   deadline to the millisecond and resets its own switch shortly after. The
   list shows the recordings newest first; selecting one opens the pane on
@@ -344,8 +364,10 @@ while it is enabled.
   answers `5xx` keeps answering `5xx`.
 - Route costs are declared, not measured: load is cost per in-flight
   connection, so a long request and a short one weigh the same until a
-  measured signal replaces the static cost. No non-chat endpoints — the
-  request vocabulary equals `GET /v1/models`.
+  measured signal replaces the static cost. The proxied surface is the
+  two OpenAI completions dialects (`/v1/chat/completions`,
+  `/v1/responses`) — no embeddings, no response retrieval by id — and
+  the request vocabulary equals `GET /v1/models`.
 
 ## Development
 
