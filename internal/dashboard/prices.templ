@@ -58,7 +58,7 @@ templ PricesFragment(v PricesView) {
 						}
 						<tr>
 							<td><input type="text" name="model" placeholder="(add entry)"/></td>
-							<td><input type="text" name="aliases" placeholder="alias1, alias2"/></td>
+							<td><input type="text" name="aliases" placeholder="qwen27, Qwen3.8 Flash Next"/></td>
 							<td><input type="text" name="input" size="10"/></td>
 							<td><input type="text" name="output" size="10"/></td>
 							<td><input type="text" name="cached_input" size="10" placeholder="= input"/></td>
@@ -71,6 +71,7 @@ templ PricesFragment(v PricesView) {
 				<span class="hint">
 					Editing rows and “Save prices” replaces the whole section; deleting the last entry drops it.
 					Rates are per 1M tokens. Cached input falls back to input, reasoning output to output.
+					An alias may contain spaces between words — “Qwen3.8 Flash Next” is one alias.
 				</span>
 			</form>
 		</div>

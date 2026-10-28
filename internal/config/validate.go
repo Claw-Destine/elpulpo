@@ -472,8 +472,10 @@ func (va *validator) priceEntry(path string, n *yaml.Node) ModelPrice {
 				if !va.scalar(apath, an, &a) {
 					continue
 				}
-				if !AliasPattern.MatchString(a) {
-					va.add(apath, an, "alias must match [A-Za-z0-9][A-Za-z0-9._:-]{0,63}, got %q", a)
+				if !PriceAliasPattern.MatchString(a) || len(a) > MaxAliasLen {
+					va.add(apath, an,
+						"alias must match [A-Za-z0-9][A-Za-z0-9._:-] with single spaces between words (no %q, max %d characters), got %q",
+						"@", MaxAliasLen, a)
 					continue
 				}
 				seen := false
@@ -577,7 +579,7 @@ func (va *validator) route(path string, n *yaml.Node) Route {
 		va.scalar(path+".alias", aliasN, &r.Alias)
 		if r.Alias == "" {
 			va.add(path+".alias", aliasN, "alias must not be empty")
-		} else if !AliasPattern.MatchString(r.Alias) {
+		} else if !RouteAliasPattern.MatchString(r.Alias) {
 			// No '@' by construction, which is what keeps a route alias out of
 			// the published-id namespace (every published id carries one).
 			va.add(path+".alias", aliasN,

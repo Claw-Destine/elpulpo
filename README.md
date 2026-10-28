@@ -92,7 +92,9 @@ prices:
     currency: USD              # required when the section exists
     models:
     -   model: qwen3.8:27b     # base model name as servers report it
-        aliases: [qwen27]      # other spellings this price also covers
+        aliases:               # other spellings this price also covers;
+        - qwen27               # spaces between words are allowed, so a
+        - Qwen3.8 Flash Next   # spaced model name is one alias
         input: 0.25            # per 1M tokens
         output: 1.00
         cached_input: 0.10     # optional, falls back to input

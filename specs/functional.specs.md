@@ -97,10 +97,14 @@ currently live configuration stays in place:
   writing an empty one. When present: `currency` is a 3-letter ISO 4217 code; `model` unique across
   entries; each alias unique across the whole document and not equal to any other entry's `model` or
   alias, so price lookup is never ambiguous; aliases match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` (no
-  `@`); all four prices are numbers ≥ 0.
+  `@`) and may additionally carry **single spaces between words**, up to 64 characters in total —
+  so a price can cover a spaced spelling like `Qwen3.8 Flash Next`; a price alias is a pricing key
+  only, never a routable name, so the spaces touch nothing outside the price table; all four prices
+  are numbers ≥ 0.
 - load-balancer routes — **the whole `loadbalancer` section is optional**, and an empty one is
   omitted on export like an empty `prices`. When present: route `alias` matches
-  `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` — the shape that keeps `@` out, which is what keeps a route
+  `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` — the shape that keeps `@` out (and, unlike a price alias,
+  spaces too), which is what keeps a route
   alias and a published model id from ever naming the same thing — and is unique across routes
   (case-insensitive, so two clients can never disagree about which one they asked for); a route has
   at least one member; a member's `model` is a published model id whose host **and** server id exist

@@ -699,7 +699,7 @@ func TestAcceptance_49_PricesFormEditorSavesEveryRow(t *testing.T) {
 		t.Fatalf("hosts-only seed: %d %s", st, body)
 	}
 
-	qwen := dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b", in: "0.25", out: "1.00"}
+	qwen := dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b, Qwen3.8 Flash Next", in: "0.25", out: "1.00"}
 	mystery := dashPriceFormRow{model: "mystery-model", in: "2", out: "8", cached: "0.5", reasoning: "8"}
 
 	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
@@ -723,9 +723,16 @@ func TestAcceptance_49_PricesFormEditorSavesEveryRow(t *testing.T) {
 	if rate(t, "qwen input", q.Input) != 0.25 || rate(t, "qwen output", q.Output) != 1 {
 		t.Fatalf("first row's rates: %+v", q)
 	}
-	if len(q.Aliases) != 2 || q.Aliases[0] != "qwen-27b" || q.Aliases[1] != "qwen27" {
-		// Both aliases arrived; Normalize sorts them for the canonical export.
+	if len(q.Aliases) != 3 || q.Aliases[0] != "Qwen3.8 Flash Next" ||
+		q.Aliases[1] != "qwen-27b" || q.Aliases[2] != "qwen27" {
+		// All three aliases arrived — the spaced name kept as one entry —
+		// and Normalize sorts them for the canonical export.
 		t.Fatalf("second column of the first row: %#v", q.Aliases)
+	}
+	// The spaced alias comes back to the screen for the next edit, intact.
+	if st, page := h.Get("/dashboard/prices"); st != 200 ||
+		!strings.Contains(page, `value="Qwen3.8 Flash Next, qwen-27b, qwen27"`) {
+		t.Fatalf("the prices screen must show the spaced alias as one entry: %d %s", st, page)
 	}
 	if q.CachedInput != nil || q.ReasoningOutput != nil {
 		t.Fatalf("blank rates must stay unset, not zeroed: %+v", q)
@@ -768,5 +775,17 @@ func TestAcceptance_49_PricesFormEditorSavesEveryRow(t *testing.T) {
 	}
 	if p = dashExportedPrices(t, h); p == nil || len(p.Models) != 1 || p.Models[0].Model != "qwen3.8:27b" {
 		t.Fatalf("a rejected save must leave the live prices alone: %+v", p)
+	}
+
+	// A spaced alias is one entry, so a doubled space is not alias text but
+	// a shape violation, reported through the same screen.
+	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
+		dashPricesForm(t, h, "USD", "",
+			dashPriceFormRow{model: "spaced-model", aliases: "Qwen3.8  Flash Next", in: "1", out: "1"}))
+	if st != 422 || !strings.Contains(body, "alias must match") {
+		t.Fatalf("a doubled space must be refused, not stored: %d %s", st, body)
+	}
+	if p = dashExportedPrices(t, h); p == nil || len(p.Models) != 1 || p.Models[0].Model != "qwen3.8:27b" {
+		t.Fatalf("the refused alias must leave the live prices alone: %+v", p)
 	}
 }

@@ -108,8 +108,20 @@ type ModelPrice struct {
 // URL- and model-id-safe.
 var IDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
-// AliasPattern is the shape price aliases must match (no '@').
-var AliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
+// RouteAliasPattern is the shape load-balancer route aliases must match
+// (no '@'). A route alias is a published name in GET /v1/models, so it
+// stays inside the URL- and header-safe character set.
+var RouteAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
+
+// PriceAliasPattern is the shape price-entry aliases must match (no '@').
+// Unlike a route alias a price alias never enters the published-name
+// namespace — it is only an exact-match key onto its entry's price — so it
+// may also carry single spaces between words ("Qwen3.8 Flash Next"). A
+// total length of 64 characters is checked separately (MaxAliasLen).
+var PriceAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*(?: [A-Za-z0-9._:-]+)*$`)
+
+// MaxAliasLen is the longest alias (route or price), in characters.
+const MaxAliasLen = 64
 
 // SupportedAPIs lists the adapters v1 ships. An adapter must define a model
 // list endpoint, a chat endpoint and a usage source (see functional spec).
