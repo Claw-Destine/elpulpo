@@ -26,7 +26,7 @@ func priceFormFields(t *testing.T, form url.Values) map[string]string {
 func TestPriceFormKeepsSpacedAliases(t *testing.T) {
 	v := url.Values{"currency": {"USD"}}
 	v.Add("model", "qwen3.8:27b")
-	v.Add("aliases", "qwen27, Qwen3.8 Flash Next ,qwen-flash")
+	v.Add("aliases", "qwen27, Qwen3.8 Flash Next ,meta-llama/Llama-3.1-8B")
 	v.Add("input", "1")
 	v.Add("output", "2")
 	v.Add("model", "") // the trailing (add entry) row
@@ -41,7 +41,7 @@ func TestPriceFormKeepsSpacedAliases(t *testing.T) {
 	if p == nil || len(p.Models) != 1 {
 		t.Fatalf("one entry expected: %#v", p)
 	}
-	want := []string{"qwen27", "Qwen3.8 Flash Next", "qwen-flash"}
+	want := []string{"qwen27", "Qwen3.8 Flash Next", "meta-llama/Llama-3.1-8B"}
 	got := p.Models[0].Aliases
 	if len(got) != len(want) {
 		t.Fatalf("aliases = %#v, want %#v", got, want)
@@ -54,8 +54,8 @@ func TestPriceFormKeepsSpacedAliases(t *testing.T) {
 }
 
 func TestSplitLinesListKeepsInnerSpaces(t *testing.T) {
-	got := splitLinesList(" Qwen3.8 Flash Next, qwen27\n qwen-flash ")
-	want := []string{"Qwen3.8 Flash Next", "qwen27", "qwen-flash"}
+	got := splitLinesList(" Qwen3.8 Flash Next, qwen27\n meta-llama/Llama-3.1-8B ")
+	want := []string{"Qwen3.8 Flash Next", "qwen27", "meta-llama/Llama-3.1-8B"}
 	if len(got) != len(want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}

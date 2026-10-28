@@ -474,7 +474,7 @@ func (va *validator) priceEntry(path string, n *yaml.Node) ModelPrice {
 				}
 				if !PriceAliasPattern.MatchString(a) || len(a) > MaxAliasLen {
 					va.add(apath, an,
-						"alias must match [A-Za-z0-9][A-Za-z0-9._:-] with single spaces between words (no %q, max %d characters), got %q",
+						"alias must match [A-Za-z0-9][A-Za-z0-9.:/_-] with single spaces between words (no %q, max %d characters), got %q",
 						"@", MaxAliasLen, a)
 					continue
 				}

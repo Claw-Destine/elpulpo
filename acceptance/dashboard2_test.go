@@ -699,7 +699,7 @@ func TestAcceptance_49_PricesFormEditorSavesEveryRow(t *testing.T) {
 		t.Fatalf("hosts-only seed: %d %s", st, body)
 	}
 
-	qwen := dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b, Qwen3.8 Flash Next", in: "0.25", out: "1.00"}
+	qwen := dashPriceFormRow{model: "qwen3.8:27b", aliases: "qwen27, qwen-27b, Qwen3.8 Flash Next, meta-llama/Llama-3.1-8B", in: "0.25", out: "1.00"}
 	mystery := dashPriceFormRow{model: "mystery-model", in: "2", out: "8", cached: "0.5", reasoning: "8"}
 
 	st, body = h.CSRFPostForm("/dashboard/action/prices/save",
@@ -723,15 +723,16 @@ func TestAcceptance_49_PricesFormEditorSavesEveryRow(t *testing.T) {
 	if rate(t, "qwen input", q.Input) != 0.25 || rate(t, "qwen output", q.Output) != 1 {
 		t.Fatalf("first row's rates: %+v", q)
 	}
-	if len(q.Aliases) != 3 || q.Aliases[0] != "Qwen3.8 Flash Next" ||
-		q.Aliases[1] != "qwen-27b" || q.Aliases[2] != "qwen27" {
-		// All three aliases arrived — the spaced name kept as one entry —
-		// and Normalize sorts them for the canonical export.
+	if len(q.Aliases) != 4 || q.Aliases[0] != "Qwen3.8 Flash Next" ||
+		q.Aliases[1] != "meta-llama/Llama-3.1-8B" || q.Aliases[2] != "qwen-27b" || q.Aliases[3] != "qwen27" {
+		// All four aliases arrived — the spaced and the slashed name each
+		// kept as one entry — and Normalize sorts them for the canonical export.
 		t.Fatalf("second column of the first row: %#v", q.Aliases)
 	}
-	// The spaced alias comes back to the screen for the next edit, intact.
+	// The spaced and slashed aliases come back to the screen for the next
+	// edit, intact.
 	if st, page := h.Get("/dashboard/prices"); st != 200 ||
-		!strings.Contains(page, `value="Qwen3.8 Flash Next, qwen-27b, qwen27"`) {
+		!strings.Contains(page, `value="Qwen3.8 Flash Next, meta-llama/Llama-3.1-8B, qwen-27b, qwen27"`) {
 		t.Fatalf("the prices screen must show the spaced alias as one entry: %d %s", st, page)
 	}
 	if q.CachedInput != nil || q.ReasoningOutput != nil {

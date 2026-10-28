@@ -95,8 +95,8 @@ prices:
     models:
     -   model: qwen3.8:27b     # base model name as servers report it
         aliases:               # other spellings this price also covers;
-        - qwen27               # spaces between words are allowed, so a
-        - Qwen3.8 Flash Next   # spaced model name is one alias
+        - qwen27               # spaces and / are ordinary characters
+        - Qwen3.8 Flash Next   # inside a name, e.g. meta-llama/Llama-3.1-8B
         input: 0.25            # per 1M tokens
         output: 1.00
         cached_input: 0.10     # optional, falls back to input

@@ -116,9 +116,10 @@ var RouteAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
 // PriceAliasPattern is the shape price-entry aliases must match (no '@').
 // Unlike a route alias a price alias never enters the published-name
 // namespace — it is only an exact-match key onto its entry's price — so it
-// may also carry single spaces between words ("Qwen3.8 Flash Next"). A
+// may also carry single spaces between words ("Qwen3.8 Flash Next") and
+// the '/' of a Hugging Face-style name ("meta-llama/Llama-3.1-8B"). A
 // total length of 64 characters is checked separately (MaxAliasLen).
-var PriceAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*(?: [A-Za-z0-9._:-]+)*$`)
+var PriceAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.:/_-]*(?: [A-Za-z0-9.:/_-]+)*$`)
 
 // MaxAliasLen is the longest alias (route or price), in characters.
 const MaxAliasLen = 64

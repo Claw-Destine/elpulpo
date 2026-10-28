@@ -8,8 +8,9 @@ import (
 )
 
 // A price alias names no endpoint — it is only an exact-match key onto its
-// entry's price — so it may carry single spaces between words, letting an
-// entry cover the spaced spelling of a model name ("Qwen3.8 Flash Next").
+// entry's price — so it may carry single spaces between words and '/' as in
+// a Hugging Face-style name, letting an entry cover spellings like
+// "Qwen3.8 Flash Next" or "meta-llama/Llama-3.1-8B".
 func TestPriceAliasAllowsSingleSpaces(t *testing.T) {
 	priceDoc := func(alias string) string {
 		return "prices:\n    currency: USD\n    models:\n    -   model: qwen3.8:27b\n" +
@@ -19,6 +20,9 @@ func TestPriceAliasAllowsSingleSpaces(t *testing.T) {
 		"qwen27",
 		"Qwen3.8 Flash Next",
 		"Qwen3.8-Flash_Next:27b",
+		"meta-llama/Llama-3.1-8B",
+		"Qwen3.8/Flash Next",
+		"a/b c/d",
 		"A B",
 		strings.Repeat("a", 64),
 	} {
@@ -34,6 +38,7 @@ func TestPriceAliasAllowsSingleSpaces(t *testing.T) {
 
 // The spaces allowed are word separators only: leading, trailing or doubled
 // spaces (and everything the strict shape always refused) stay violations.
+// A '/' is alias text, but never a legal first character.
 func TestPriceAliasSpacesStayWordSeparators(t *testing.T) {
 	priceDoc := func(alias string) string {
 		return "prices:\n    currency: USD\n    models:\n    -   model: qwen3.8:27b\n" +
@@ -44,9 +49,11 @@ func TestPriceAliasSpacesStayWordSeparators(t *testing.T) {
 		`"qwen "`,    // trailing space
 		`"qwen  27"`, // doubled space
 		`"Qwen3.8 Flash Next "`,
-		"qwen@27",   // '@' stays out of the alias namespace
-		"-qwen",     // must start alphanumeric
-		`"qwen,27"`, // a comma is the list separator, never alias text
+		"/qwen",      // must start alphanumeric, '/' included
+		`"qwen\\27"`, // a backslash was never alias text
+		"qwen@27",    // '@' stays out of the alias namespace
+		"-qwen",      // must start alphanumeric
+		`"qwen,27"`,  // a comma is the list separator, never alias text
 		strings.Repeat("a", 65),
 	} {
 		if _, v := config.ParseAndValidate([]byte(priceDoc(a))); len(v) == 0 {
@@ -70,11 +77,11 @@ func TestPriceAliasViolationMessage(t *testing.T) {
 	}
 }
 
-// A spaced alias survives the canonical export and reparse unchanged, and
-// two spaced aliases that differ collide like any other names.
+// A spaced or slashed alias survives the canonical export and reparse
+// unchanged, and two aliases that name the same thing collide like any others.
 func TestSpacedPriceAliasCanonicalRoundTrip(t *testing.T) {
 	src := "prices:\n    currency: USD\n    models:\n" +
-		"    -   model: qwen3.8:27b\n        aliases: [Qwen3.8 Flash Next, qwen flash]\n" +
+		"    -   model: qwen3.8:27b\n        aliases: [Qwen3.8 Flash Next, qwen flash, meta-llama/Llama-3.1-8B]\n" +
 		"        input: 1\n        output: 1\n"
 	cfg := parse(t, src)
 	first := config.Canonical(cfg)
@@ -82,8 +89,8 @@ func TestSpacedPriceAliasCanonicalRoundTrip(t *testing.T) {
 		t.Fatalf("canonical export with a spaced alias must reparse: %v\n%s", v, first)
 	}
 	cfg2 := parse(t, string(first))
-	if got := cfg2.Prices.Models[0].Aliases; len(got) != 2 ||
-		got[0] != "Qwen3.8 Flash Next" && got[1] != "Qwen3.8 Flash Next" {
+	if got := cfg2.Prices.Models[0].Aliases; len(got) != 3 ||
+		!contains(got, "Qwen3.8 Flash Next") || !contains(got, "meta-llama/Llama-3.1-8B") {
 		t.Fatalf("spaced alias lost in round-trip: %#v\n%s", got, first)
 	}
 	if second := config.Canonical(cfg2); string(first) != string(second) {
@@ -104,15 +111,24 @@ func TestSpacedPriceAliasCanonicalRoundTrip(t *testing.T) {
 }
 
 // A route alias is a published name in /v1/models, so it keeps the strict
-// shape: spaces stay refused there.
-func TestRouteAliasStillRejectsSpaces(t *testing.T) {
+// shape: spaces and slashes stay refused there.
+func TestRouteAliasStaysStrict(t *testing.T) {
 	hosts := "hosts:\n-   host_addresses: [h]\n    id: minion1\n    servers:\n" +
 		"    -   port: 11434\n        api: ollama\n        id: ollama\n"
-	for _, alias := range []string{"qwen fast", " qwen", "qwen ", "qwen  fast"} {
+	for _, alias := range []string{"qwen fast", " qwen", "qwen ", "qwen  fast", "qwen/fast", "/qwen"} {
 		src := hosts + "loadbalancer:\n    routes:\n    -   alias: \"" + alias +
 			"\"\n        models:\n        -   model: x-ollama@minion1\n"
 		if _, v := config.ParseAndValidate([]byte(src)); len(v) == 0 {
 			t.Fatalf("route alias %q must be rejected", alias)
 		}
 	}
+}
+
+func contains(vals []string, want string) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
